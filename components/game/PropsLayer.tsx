@@ -2,7 +2,7 @@
 
 import { useMemo } from "react"
 import * as THREE from "three"
-import { buildProps, type PlacedProp } from "@/lib/game/props"
+import { buildProps, type PlacedProp } from "@/lib/game/world/props"
 
 function PropInstance({ p }: { p: PlacedProp }) {
   const pos = p.position.toArray() as [number, number, number]

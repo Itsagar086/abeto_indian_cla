@@ -2,14 +2,16 @@
 
 import { useMemo } from "react"
 import * as THREE from "three"
-import { buildPlanetGeometry } from "@/lib/game/terrain"
-import { WATER_LEVEL } from "@/lib/game/data"
+import { buildPlanetGeometry } from "@/lib/game/world/terrain"
+import { WATER_LEVEL, TERRAIN_DETAIL } from "@/lib/game/config/world"
+import { SKY_COLOR, FOG, WATER_MATERIAL } from "@/lib/game/rendering/scene"
+import { HEMISPHERE_LIGHT, DIRECTIONAL_LIGHT } from "@/lib/game/rendering/lighting"
 import { Player } from "./Player"
 import { NpcLayer } from "./NpcLayer"
 import { PropsLayer } from "./PropsLayer"
 
 function Planet() {
-  const geometry = useMemo(() => buildPlanetGeometry(64), [])
+  const geometry = useMemo(() => buildPlanetGeometry(TERRAIN_DETAIL), [])
   return (
     <mesh geometry={geometry} receiveShadow castShadow>
       <meshStandardMaterial vertexColors roughness={0.95} metalness={0} />
@@ -22,11 +24,11 @@ function Water() {
   return (
     <mesh geometry={geometry}>
       <meshStandardMaterial
-        color="#3f7fa8"
+        color={WATER_MATERIAL.color}
         transparent
-        opacity={0.82}
-        roughness={0.2}
-        metalness={0.1}
+        opacity={WATER_MATERIAL.opacity}
+        roughness={WATER_MATERIAL.roughness}
+        metalness={WATER_MATERIAL.metalness}
       />
     </mesh>
   )
@@ -35,20 +37,22 @@ function Water() {
 export function Scene() {
   return (
     <>
-      <color attach="background" args={["#bfe0ee"]} />
-      <fog attach="fog" args={["#cfe6ee", 60, 140]} />
+      <color attach="background" args={[SKY_COLOR]} />
+      <fog attach="fog" args={[FOG.color, FOG.near, FOG.far]} />
 
-      <hemisphereLight args={["#fff3d6", "#5a6a4a", 0.65]} />
+      <hemisphereLight
+        args={[HEMISPHERE_LIGHT.skyColor, HEMISPHERE_LIGHT.groundColor, HEMISPHERE_LIGHT.intensity]}
+      />
       <directionalLight
-        position={[40, 60, 20]}
-        intensity={1.6}
-        color="#fff2d6"
+        position={DIRECTIONAL_LIGHT.position}
+        intensity={DIRECTIONAL_LIGHT.intensity}
+        color={DIRECTIONAL_LIGHT.color}
         castShadow
-        shadow-mapSize={[2048, 2048]}
-        shadow-camera-left={-40}
-        shadow-camera-right={40}
-        shadow-camera-top={40}
-        shadow-camera-bottom={-40}
+        shadow-mapSize={DIRECTIONAL_LIGHT.shadow.mapSize}
+        shadow-camera-left={DIRECTIONAL_LIGHT.shadow.camera.left}
+        shadow-camera-right={DIRECTIONAL_LIGHT.shadow.camera.right}
+        shadow-camera-top={DIRECTIONAL_LIGHT.shadow.camera.top}
+        shadow-camera-bottom={DIRECTIONAL_LIGHT.shadow.camera.bottom}
       />
 
       <Planet />

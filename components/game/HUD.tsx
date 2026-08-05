@@ -1,8 +1,9 @@
 "use client"
 
 import { useEffect } from "react"
-import { useGameStore } from "@/lib/game/store"
-import { QUESTS } from "@/lib/game/data"
+import { useGameStore } from "@/lib/game/state/store"
+import { QUESTS } from "@/lib/game/data/quests"
+import { TOAST_DURATION_MS } from "@/lib/game/config/ui"
 
 export function HUD() {
   const dialogue = useGameStore((s) => s.dialogue)
@@ -14,7 +15,7 @@ export function HUD() {
 
   useEffect(() => {
     if (!toast) return
-    const t = setTimeout(closeToast, 3200)
+    const t = setTimeout(closeToast, TOAST_DURATION_MS)
     return () => clearTimeout(t)
   }, [toast, closeToast])
 

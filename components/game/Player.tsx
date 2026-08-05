@@ -3,13 +3,12 @@
 import { useRef, useEffect, useMemo } from "react"
 import { useFrame, useThree } from "@react-three/fiber"
 import * as THREE from "three"
-import { NPCS, PHYSICS, INITIAL_CHARACTER } from "@/lib/game/data"
-import { terrainRadius } from "@/lib/game/terrain"
-import { useGameStore } from "@/lib/game/store"
-
-const MOVE_SPEED = 0.11
-const TURN_SPEED = 2.6
-const TALK_DISTANCE = 2.4
+import { NPCS } from "@/lib/game/data/npcs"
+import { PHYSICS } from "@/lib/game/config/physics"
+import { INITIAL_CHARACTER, MOVE_SPEED, TURN_SPEED } from "@/lib/game/config/player"
+import { terrainRadius } from "@/lib/game/world/terrain"
+import { useGameStore } from "@/lib/game/state/store"
+import { findNearestNpc } from "@/lib/game/systems/interaction"
 
 function useKeys() {
   const keys = useRef<Record<string, boolean>>({})
@@ -168,16 +167,8 @@ export function Player() {
     camera.lookAt(position.current.clone().addScaledVector(upNow, 0.9))
 
     // nearest NPC for the interaction prompt
-    let nearestId: string | null = null
-    let nearestDist = Infinity
-    NPCS.forEach((n, i) => {
-      const d = npcVecs[i].distanceTo(position.current)
-      if (d < nearestDist) {
-        nearestDist = d
-        nearestId = n.id
-      }
-    })
-    setNearbyNpc(nearestDist < TALK_DISTANCE ? nearestId : null)
+    const proximity = findNearestNpc(npcVecs, NPCS, position.current)
+    setNearbyNpc(proximity?.inRange ? proximity.nearestId : null)
   })
 
   return (

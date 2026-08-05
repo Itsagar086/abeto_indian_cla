@@ -3,9 +3,10 @@
 import { useMemo } from "react"
 import * as THREE from "three"
 import { Html } from "@react-three/drei"
-import { NPCS, type Npc } from "@/lib/game/data"
-import { surfaceQuaternion } from "@/lib/game/terrain"
-import { useGameStore, useNpcHasQuest } from "@/lib/game/store"
+import { NPCS } from "@/lib/game/data/npcs"
+import type { Npc } from "@/lib/game/data/npcs"
+import { surfaceQuaternion } from "@/lib/game/utilities/helpers"
+import { useGameStore, useNpcHasQuest } from "@/lib/game/state/store"
 
 function NpcFigure({ npc }: { npc: Npc }) {
   const pos = new THREE.Vector3(...npc.position)
