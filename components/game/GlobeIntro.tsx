@@ -53,7 +53,7 @@ const STAGES: { title: string; body: string }[] = [
   },
   {
     title: "Your Mission",
-    body: "Complete all 5 deliveries across the bazaar, the temple hill, the mango grove and beyond. Shubh yatra, Mitra!",
+    body: "Complete all 5 deliveries across KR Market, Nandi Betta, the great banyan tree and beyond. Shubh yatra, Mitra!",
   },
 ]
 
