@@ -1,1 +1,2 @@
 @AGENTS.md
+@WORLD_DESIGN.md
