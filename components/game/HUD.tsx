@@ -1,8 +1,12 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useGameStore } from "@/lib/game/store"
-import { QUESTS } from "@/lib/game/data"
+import { QUESTS, ZONES } from "@/lib/game/data"
+
+const ZONE_FADE_IN = 400
+const ZONE_HOLD = 2200
+const ZONE_FADE_OUT = 600
 
 export function HUD() {
   const dialogue = useGameStore((s) => s.dialogue)
@@ -11,12 +15,41 @@ export function HUD() {
   const activeQuestId = useGameStore((s) => s.activeQuestId)
   const completedQuests = useGameStore((s) => s.completedQuests)
   const closeToast = useGameStore((s) => s.closeToast)
+  const currentZoneId = useGameStore((s) => s.currentZoneId)
 
   useEffect(() => {
     if (!toast) return
     const t = setTimeout(closeToast, 3200)
     return () => clearTimeout(t)
   }, [toast, closeToast])
+
+  // zone banner. Raising a new announcement is kept separate from running its
+  // timers, so leaving a zone (id -> null) never cancels the fade-out in flight.
+  const [announcement, setAnnouncement] = useState<{ seq: number; text: string } | null>(null)
+  const [zoneVisible, setZoneVisible] = useState(false)
+  const zoneSeq = useRef(0)
+
+  useEffect(() => {
+    if (!currentZoneId) return
+    const zone = ZONES.find((z) => z.id === currentZoneId)
+    if (!zone) return
+    zoneSeq.current += 1
+    setAnnouncement({ seq: zoneSeq.current, text: zone.text })
+  }, [currentZoneId])
+
+  useEffect(() => {
+    if (!announcement) return
+    setZoneVisible(true)
+    const fade = setTimeout(() => setZoneVisible(false), ZONE_FADE_IN + ZONE_HOLD)
+    const drop = setTimeout(
+      () => setAnnouncement(null),
+      ZONE_FADE_IN + ZONE_HOLD + ZONE_FADE_OUT,
+    )
+    return () => {
+      clearTimeout(fade)
+      clearTimeout(drop)
+    }
+  }, [announcement])
 
   const activeQuest = QUESTS.find((q) => q.id === activeQuestId)
 
@@ -49,6 +82,28 @@ export function HUD() {
         <div>Space — jump</div>
         <div>E — talk / continue</div>
       </div>
+
+      {/* top-center: zone entry banner */}
+      {announcement && (
+        <div
+          className={`absolute inset-x-0 top-40 flex flex-col items-center px-6 text-center transition-opacity ${
+            zoneVisible ? "opacity-100 duration-[400ms]" : "opacity-0 duration-[600ms]"
+          }`}
+        >
+          <div className="rounded-xl bg-black/45 px-7 py-2.5 backdrop-blur-sm">
+            <div
+              className="font-serif text-2xl tracking-wide"
+              style={{ color: "#f2d9a8" }}
+            >
+              {announcement.text}
+            </div>
+            <div
+              className="mx-auto mt-1.5 h-px w-28"
+              style={{ background: "linear-gradient(90deg, transparent, #d97b3a, transparent)" }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* bottom-center: dialogue */}
       {dialogue && (

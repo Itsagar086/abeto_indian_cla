@@ -27,6 +27,10 @@ type GameState = {
   nearbyNpcId: string | null
   setNearbyNpc: (id: string | null) => void
 
+  /** the zone the player is standing in, or null when between zones */
+  currentZoneId: string | null
+  setCurrentZone: (id: string | null) => void
+
   interact: (npcId: string) => void
   advanceDialogue: () => void
   closeToast: () => void
@@ -64,8 +68,11 @@ export const useGameStore = create<GameState>((set, get) => ({
   toast: null,
   nearbyNpcId: null,
   completedQuests: [],
+  currentZoneId: null,
 
   setNearbyNpc: (id) => set({ nearbyNpcId: id }),
+
+  setCurrentZone: (id) => set({ currentZoneId: id }),
 
   interact: (npcId) => {
     const { npcQuestIndex, carrying, dialogue } = get()

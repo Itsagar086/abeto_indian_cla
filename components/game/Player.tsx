@@ -3,7 +3,7 @@
 import { useRef, useEffect, useMemo } from "react"
 import { useFrame, useThree } from "@react-three/fiber"
 import * as THREE from "three"
-import { NPCS, PHYSICS, INITIAL_CHARACTER } from "@/lib/game/data"
+import { NPCS, PHYSICS, INITIAL_CHARACTER, ZONES } from "@/lib/game/data"
 import { terrainRadius } from "@/lib/game/terrain"
 import { useGameStore } from "@/lib/game/store"
 import { playerState } from "@/lib/game/playerState"
@@ -11,6 +11,10 @@ import { playerState } from "@/lib/game/playerState"
 const MOVE_SPEED = 0.11
 const TURN_SPEED = 2.6
 const TALK_DISTANCE = 2.4
+/** angular radius to enter a zone, and the wider one to leave it (hysteresis) */
+const ZONE_ENTER = 0.3
+const ZONE_EXIT = 0.4
+const ZONE_CHECK_FRAMES = 30
 
 function useKeys() {
   const keys = useRef<Record<string, boolean>>({})
@@ -48,6 +52,15 @@ export function Player() {
   const carrying = useGameStore((s) => s.carrying)
 
   const npcVecs = useMemo(() => NPCS.map((n) => new THREE.Vector3(...n.position)), [])
+
+  // zone entry detection: unit direction of each zone centre, plus the zone we
+  // are currently inside (kept in a ref so this never re-renders the player)
+  const zoneDirs = useMemo(
+    () => ZONES.map((z) => new THREE.Vector3(...z.center).normalize()),
+    [],
+  )
+  const zoneTick = useRef(0)
+  const zoneId = useRef<string | null>(null)
 
   // initialise forward so it's tangent to the sphere at spawn
   useEffect(() => {
@@ -179,6 +192,34 @@ export function Player() {
     // publish the live transform for DOM overlays outside the R3F tree
     playerState.position.copy(position.current)
     playerState.forward.copy(forward.current)
+
+    // zone entry, checked occasionally — angles change far slower than frames
+    zoneTick.current++
+    if (zoneTick.current % ZONE_CHECK_FRAMES === 0) {
+      let nearestId: string | null = null
+      let nearestAngle = Infinity
+      let currentAngle = Infinity
+      for (let i = 0; i < zoneDirs.length; i++) {
+        const angle = Math.acos(Math.max(-1, Math.min(1, upNow.dot(zoneDirs[i]))))
+        if (angle < nearestAngle) {
+          nearestAngle = angle
+          nearestId = ZONES[i].id
+        }
+        if (ZONES[i].id === zoneId.current) currentAngle = angle
+      }
+      // hold the current zone until we are well outside it, so walking the
+      // boundary cannot flicker the banner
+      const next =
+        zoneId.current && currentAngle <= ZONE_EXIT
+          ? zoneId.current
+          : nearestAngle < ZONE_ENTER
+            ? nearestId
+            : null
+      if (next !== zoneId.current) {
+        zoneId.current = next
+        useGameStore.getState().setCurrentZone(next)
+      }
+    }
   })
 
   return (
