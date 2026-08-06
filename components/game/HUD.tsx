@@ -25,7 +25,7 @@ export function HUD() {
       {/* top-left: title + quest tracker */}
       <div className="absolute left-4 top-4 flex flex-col gap-2">
         <div className="rounded-xl bg-black/45 px-3 py-1.5 text-white backdrop-blur-sm">
-          <div className="text-sm font-bold tracking-wide">Dak Wala</div>
+          <div className="text-sm font-bold tracking-wide">Bharat Mitra</div>
           <div className="text-[10px] text-white/70">village courier</div>
         </div>
         {activeQuest && (

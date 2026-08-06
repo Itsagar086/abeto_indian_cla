@@ -35,7 +35,7 @@ const PULSE_PERIOD = 1.2
 const OCEAN = "#10333d"
 const LAND = "#e0c191"
 const INDIA_FILL = "#f4a63a"
-const INDIA_EDGE = "#b9701f"
+const STATE_LINE = "rgba(150, 88, 20, 0.45)"
 const KARNATAKA = "#ffd76a"
 const BACKDROP = "#0b1a2e"
 
@@ -101,29 +101,40 @@ function newCanvas() {
   return canvas
 }
 
-function isIndia(f: any) {
-  const p = f?.properties ?? {}
-  if (p.ISO_A3 === "IND" || p.ADM0_A3 === "IND") return true
-  return /^india$/i.test(String(p.NAME ?? p.ADMIN ?? p.name ?? ""))
+/** stroke a feature set without filling it */
+function outline(ctx: CanvasRenderingContext2D, features: any[], stroke: string, lineWidth: number) {
+  ctx.beginPath()
+  for (const f of features) for (const poly of polygonsOf(f?.geometry)) tracePolygon(ctx, poly)
+  ctx.strokeStyle = stroke
+  ctx.lineWidth = lineWidth
+  ctx.lineJoin = "round"
+  ctx.stroke()
 }
 
-/** world map; falls back to a plain sand globe when the geojson is missing */
-function buildBaseTexture(world: any | null) {
+/** world map, with India in its official depiction drawn over the top;
+ *  falls back to a plain sand globe when the world geojson is missing */
+function buildBaseTexture(world: any | null, states: any | null) {
   const canvas = newCanvas()
   const ctx = canvas.getContext("2d")!
-  const features: any[] = world?.features ?? []
+  const worldFeatures: any[] = world?.features ?? []
 
-  if (!features.length) {
+  if (worldFeatures.length) {
+    ctx.fillStyle = OCEAN
+    ctx.fillRect(0, 0, TEX_W, TEX_H)
+    paint(ctx, worldFeatures, LAND)
+  } else {
     ctx.fillStyle = LAND
     ctx.fillRect(0, 0, TEX_W, TEX_H)
-    return toTexture(canvas)
   }
 
-  ctx.fillStyle = OCEAN
-  ctx.fillRect(0, 0, TEX_W, TEX_H)
-  paint(ctx, features, LAND)
-  const india = features.filter(isIndia)
-  if (india.length) paint(ctx, india, INDIA_FILL, INDIA_EDGE, 3)
+  // India is the union of every state/UT, traced into a single path so shared
+  // borders merge into one silhouette. Drawn on top of the world land layer,
+  // which is what reconciles the base map with the official depiction.
+  const stateFeatures: any[] = states?.features ?? []
+  if (stateFeatures.length) {
+    paint(ctx, stateFeatures, INDIA_FILL)
+    outline(ctx, stateFeatures, STATE_LINE, 1.5)
+  }
   return toTexture(canvas)
 }
 
@@ -131,7 +142,7 @@ function buildBaseTexture(world: any | null) {
 function buildKarnatakaTexture(states: any | null) {
   const features: any[] = (states?.features ?? []).filter((f: any) => {
     const p = f?.properties ?? {}
-    return /karnataka/i.test(String(p.st_nm ?? p.NAME_1 ?? p.NAME ?? p.name ?? ""))
+    return /karnataka/i.test(String(p.ST_NM ?? p.st_nm ?? p.NAME_1 ?? p.NAME ?? p.name ?? ""))
   })
   if (!features.length) return null
 
@@ -263,7 +274,7 @@ export function GlobeIntro() {
     Promise.all([grab("/geo/world.geo.json"), grab("/geo/india-states.geo.json")]).then(
       ([world, states]) => {
         if (cancelled) return
-        setGeo({ base: buildBaseTexture(world), karnataka: buildKarnatakaTexture(states) })
+        setGeo({ base: buildBaseTexture(world, states), karnataka: buildKarnatakaTexture(states) })
       },
     )
     return () => {
@@ -326,7 +337,7 @@ export function GlobeIntro() {
           className="text-[12px] font-medium uppercase tracking-[0.18em]"
           style={{ color: "#e0c191" }}
         >
-          Welcome to Dak Wala — Village Courier
+          Welcome to Bharat Mitra — Village Courier
         </div>
       </div>
 

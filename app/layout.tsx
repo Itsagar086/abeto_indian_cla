@@ -3,7 +3,7 @@ import type { Metadata, Viewport } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Dak Wala — Village Courier',
+  title: 'Bharat Mitra — Village Courier',
   description: 'A small delivery courier game set in a tiny Indian village world.',
   generator: 'v0.app',
   icons: {
