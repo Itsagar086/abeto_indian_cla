@@ -31,6 +31,31 @@ const SETTLE_SECONDS = 4
 const CAM_START = 3.6
 const CAM_END = 2.85
 const PULSE_PERIOD = 1.2
+/** radians/sec the globe keeps turning behind the guide panel */
+const GUIDE_DRIFT = 0.06
+
+const STAGES: { title: string; body: string }[] = [
+  {
+    title: "A Tiny Round World",
+    body: "You are the courier of a small village planet. Gravity pulls to its heart — walk in any direction and you will come back home.",
+  },
+  {
+    title: "Moving Around",
+    body: "W / S or arrow keys — walk forward and back. A / D — turn. Hold Shift to sprint. Space to jump.",
+  },
+  {
+    title: "Meet the Villagers",
+    body: "Villagers with an amber ! above their head have a delivery for you. Walk close and press E to talk. Press E again to continue the conversation.",
+  },
+  {
+    title: "Deliveries",
+    body: "You carry one parcel at a time — you will see it on your back. Deliver it to the right person before accepting another job.",
+  },
+  {
+    title: "Your Mission",
+    body: "Complete all 5 deliveries across the bazaar, the temple hill, the mango grove and beyond. Shubh yatra, Mitra!",
+  },
+]
 
 const OCEAN = "#10333d"
 const LAND = "#e0c191"
@@ -188,21 +213,34 @@ function Starfield() {
   )
 }
 
-function Globe({ base, karnataka }: { base: THREE.Texture; karnataka: THREE.Texture | null }) {
+function Globe({
+  base,
+  karnataka,
+  guide,
+}: {
+  base: THREE.Texture
+  karnataka: THREE.Texture | null
+  guide: boolean
+}) {
   const spinRef = useRef<THREE.Group>(null)
   const pulseRef = useRef<THREE.MeshBasicMaterial>(null)
   const startRef = useRef<number | null>(null)
+  const driftRef = useRef(0)
 
-  useFrame(({ clock, camera }) => {
+  useFrame(({ clock, camera }, delta) => {
     if (startRef.current === null) startRef.current = clock.getElapsedTime()
     const t = clock.getElapsedTime() - startRef.current
+
+    // once the guide takes over, the globe becomes a slowly turning backdrop
+    if (guide) driftRef.current += delta * GUIDE_DRIFT
 
     // ease the spin home over the first few seconds, then sway very gently
     const p = Math.min(1, t / SETTLE_SECONDS)
     const eased = 1 - Math.pow(1 - p, 3)
     const sway = p >= 1 ? Math.sin((t - SETTLE_SECONDS) * 0.32) * 0.022 : 0
     if (spinRef.current) {
-      spinRef.current.rotation.y = START_SPIN_Y + (TARGET_SPIN_Y - START_SPIN_Y) * eased + sway
+      spinRef.current.rotation.y =
+        START_SPIN_Y + (TARGET_SPIN_Y - START_SPIN_Y) * eased + sway + driftRef.current
     }
     camera.position.z = CAM_START + (CAM_END - CAM_START) * eased
 
@@ -256,7 +294,9 @@ function Globe({ base, karnataka }: { base: THREE.Texture; karnataka: THREE.Text
 /* ------------------------------------------------------------------ overlay */
 
 export function GlobeIntro() {
-  const [dismissed, setDismissed] = useState(false)
+  const [phase, setPhase] = useState<"globe" | "guide" | "gone">("globe")
+  const [ready, setReady] = useState(false)
+  const [step, setStep] = useState(0)
   const [geo, setGeo] = useState<{ base: THREE.Texture; karnataka: THREE.Texture | null } | null>(
     null,
   )
@@ -275,6 +315,9 @@ export function GlobeIntro() {
       ([world, states]) => {
         if (cancelled) return
         setGeo({ base: buildBaseTexture(world, states), karnataka: buildKarnatakaTexture(states) })
+        // both files resolved and both textures are built — including the
+        // fallback path, where a failed fetch still yields a usable globe
+        setReady(true)
       },
     )
     return () => {
@@ -290,13 +333,18 @@ export function GlobeIntro() {
     [geo],
   )
 
-  if (dismissed) return null
+  if (phase === "gone") return null
+
+  // CHALO hands over to the guide — the globe stays on as a dimmed backdrop
+  const chalo = () => setPhase("guide")
 
   // fade via the ref so the transition runs without a re-render, then unmount
-  const chalo = () => {
+  const begin = () => {
     if (overlayRef.current) overlayRef.current.style.opacity = "0"
-    setTimeout(() => setDismissed(true), 600)
+    setTimeout(() => setPhase("gone"), 600)
   }
+
+  const isLastStage = step === STAGES.length - 1
 
   return (
     <div
@@ -313,47 +361,147 @@ export function GlobeIntro() {
           from { opacity: 0; transform: translateY(10px); pointer-events: none; }
           to   { opacity: 1; transform: none; pointer-events: auto; }
         }
+        @keyframes gi-fade {
+          from { opacity: 0; }
+          to   { opacity: 1; }
+        }
+        @keyframes gi-dot {
+          0%, 100% { opacity: 0.25; transform: scale(0.8); }
+          50%      { opacity: 1;    transform: scale(1); }
+        }
       `}</style>
 
-      {geo && (
-        <div className="absolute inset-0">
-          <Canvas
-            camera={{ fov: 42, position: [0, 0, CAM_START], near: 0.1, far: 100 }}
-            gl={{ antialias: true }}
-          >
-            <Globe base={geo.base} karnataka={geo.karnataka} />
-          </Canvas>
+      {/* nothing but the backdrop until the globe is genuinely ready */}
+      {!ready && (
+        <div className="absolute inset-0 flex items-center justify-center gap-2">
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              className="h-2 w-2 rounded-full"
+              style={{
+                background: "#d97b3a",
+                animation: `gi-dot 1200ms ease-in-out ${i * 160}ms infinite`,
+              }}
+            />
+          ))}
         </div>
       )}
 
-      <div
-        className="pointer-events-none absolute inset-x-0 top-[11vh] flex flex-col items-center gap-2 px-6 text-center"
-        style={{ animation: "gi-rise 900ms ease-out 1500ms both" }}
-      >
-        <div className="text-5xl font-bold tracking-wide" style={{ color: "#f7ecd8" }}>
-          Namaste
-        </div>
+      {ready && geo && (
         <div
-          className="text-[12px] font-medium uppercase tracking-[0.18em]"
-          style={{ color: "#e0c191" }}
+          className="absolute inset-0 transition-opacity duration-[600ms]"
+          style={{ opacity: phase === "guide" ? 0.25 : 1 }}
         >
-          Welcome to Bharat Mitra — Village Courier
+          {/* nested: a filled animation would otherwise override the dim above */}
+          <div className="h-full w-full" style={{ animation: "gi-fade 600ms ease-out both" }}>
+            <Canvas
+              camera={{ fov: 42, position: [0, 0, CAM_START], near: 0.1, far: 100 }}
+              gl={{ antialias: true }}
+            >
+              <Globe base={geo.base} karnataka={geo.karnataka} guide={phase === "guide"} />
+            </Canvas>
+          </div>
         </div>
-      </div>
+      )}
 
-      <div
-        className="absolute inset-x-0 bottom-[12vh] flex justify-center"
-        style={{ animation: "gi-rise-btn 900ms ease-out 4200ms both" }}
-      >
-        <button
-          type="button"
-          onClick={chalo}
-          className="rounded-full px-10 py-2.5 text-sm font-bold tracking-[0.15em] text-white shadow-lg transition-all hover:brightness-110 active:translate-y-px"
-          style={{ background: "#d97b3a" }}
+      {/* these mount only once ready, so their delays are measured from then */}
+      {ready && phase === "globe" && (
+        <>
+          <div
+            className="pointer-events-none absolute inset-x-0 top-[11vh] flex flex-col items-center gap-2 px-6 text-center"
+            style={{ animation: "gi-rise 900ms ease-out 1500ms both" }}
+          >
+            <div className="text-5xl font-bold tracking-wide" style={{ color: "#f7ecd8" }}>
+              Namaste
+            </div>
+            <div
+              className="text-[12px] font-medium uppercase tracking-[0.18em]"
+              style={{ color: "#e0c191" }}
+            >
+              Welcome to Bharat Mitra — Village Courier
+            </div>
+          </div>
+
+          <div
+            className="absolute inset-x-0 bottom-[12vh] flex justify-center"
+            style={{ animation: "gi-rise-btn 900ms ease-out 4200ms both" }}
+          >
+            <button
+              type="button"
+              onClick={chalo}
+              className="rounded-full px-10 py-2.5 text-sm font-bold tracking-[0.15em] text-white shadow-lg transition-all hover:brightness-110 active:translate-y-px"
+              style={{ background: "#d97b3a" }}
+            >
+              CHALO
+            </button>
+          </div>
+        </>
+      )}
+
+      {ready && phase === "guide" && (
+        <div
+          className="absolute inset-0 flex items-center justify-center px-6"
+          style={{ animation: "gi-rise 500ms ease-out both" }}
         >
-          CHALO
-        </button>
-      </div>
+          <div
+            className="w-full max-w-[520px] rounded-2xl border px-7 py-6 shadow-xl backdrop-blur-sm"
+            style={{
+              background: "rgba(28, 19, 13, 0.88)",
+              borderColor: "rgba(217, 123, 58, 0.35)",
+            }}
+          >
+            <div
+              className="text-[10px] font-bold uppercase tracking-[0.2em]"
+              style={{ color: "#d97b3a" }}
+            >
+              Step {step + 1} of {STAGES.length}
+            </div>
+            <div className="mt-1.5 text-2xl font-bold tracking-wide" style={{ color: "#f7ecd8" }}>
+              {STAGES[step].title}
+            </div>
+            <p className="mt-3 text-sm leading-relaxed text-white/75">{STAGES[step].body}</p>
+
+            <div className="mt-6 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                {STAGES.map((s, i) => (
+                  <div
+                    key={s.title}
+                    className="h-2 w-2 rounded-full transition-all"
+                    style={
+                      i === step
+                        ? { background: "#d97b3a", transform: "scale(1.15)" }
+                        : {
+                            background: "transparent",
+                            boxShadow: "inset 0 0 0 1px rgba(224, 193, 145, 0.45)",
+                          }
+                    }
+                  />
+                ))}
+              </div>
+
+              <div className="flex items-center gap-4">
+                {step > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setStep(step - 1)}
+                    className="text-xs font-medium text-white/55 underline-offset-4 transition-colors hover:text-white/85 hover:underline"
+                  >
+                    Back
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => (isLastStage ? begin() : setStep(step + 1))}
+                  className="rounded-full px-7 py-2 text-sm font-bold tracking-[0.12em] text-white shadow-lg transition-all hover:brightness-110 active:translate-y-px"
+                  style={{ background: "#d97b3a" }}
+                >
+                  {isLastStage ? "Let's Begin" : "Next"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
