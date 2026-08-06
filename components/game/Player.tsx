@@ -6,6 +6,7 @@ import * as THREE from "three"
 import { NPCS, PHYSICS, INITIAL_CHARACTER } from "@/lib/game/data"
 import { terrainRadius } from "@/lib/game/terrain"
 import { useGameStore } from "@/lib/game/store"
+import { playerState } from "@/lib/game/playerState"
 
 const MOVE_SPEED = 0.11
 const TURN_SPEED = 2.6
@@ -174,6 +175,10 @@ export function Player() {
       }
     })
     setNearbyNpc(nearestDist < TALK_DISTANCE ? nearestId : null)
+
+    // publish the live transform for DOM overlays outside the R3F tree
+    playerState.position.copy(position.current)
+    playerState.forward.copy(forward.current)
   })
 
   return (
