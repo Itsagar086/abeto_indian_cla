@@ -4,6 +4,7 @@ import { Suspense } from "react"
 import { Canvas } from "@react-three/fiber"
 import { Scene } from "@/components/game/Scene"
 import { HUD } from "@/components/game/HUD"
+import { GlobeIntro } from "@/components/game/GlobeIntro"
 
 export default function Page() {
   return (
@@ -18,6 +19,7 @@ export default function Page() {
         </Suspense>
       </Canvas>
       <HUD />
+      <GlobeIntro />
     </main>
   )
 }
