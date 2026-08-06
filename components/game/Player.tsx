@@ -43,13 +43,8 @@ export function Player() {
   const camPos = useRef(new THREE.Vector3())
   const stepPhase = useRef(0)
 
-  const dialogue = useGameStore((s) => s.dialogue)
-  const interact = useGameStore((s) => s.interact)
-  const advanceDialogue = useGameStore((s) => s.advanceDialogue)
   const setNearbyNpc = useGameStore((s) => s.setNearbyNpc)
   const carrying = useGameStore((s) => s.carrying)
-  const toast = useGameStore((s) => s.toast)
-  const closeToast = useGameStore((s) => s.closeToast)
 
   const npcVecs = useMemo(() => NPCS.map((n) => new THREE.Vector3(...n.position)), [])
 
@@ -60,10 +55,12 @@ export function Player() {
     forward.current.copy(ref.sub(up.clone().multiplyScalar(ref.dot(up)))).normalize()
   }, [])
 
-  // interact key (edge-triggered)
+  // interact key — registered once, reads live state via getState() to avoid stale closure
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() !== "e") return
+      const { dialogue, toast, nearbyNpcId, closeToast, advanceDialogue, interact } =
+        useGameStore.getState()
       if (toast) {
         closeToast()
         return
@@ -72,12 +69,11 @@ export function Player() {
         advanceDialogue()
         return
       }
-      const nearby = useGameStore.getState().nearbyNpcId
-      if (nearby) interact(nearby)
+      if (nearbyNpcId) interact(nearbyNpcId)
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [dialogue, toast, interact, advanceDialogue, closeToast])
+  }, [])
 
   useFrame((_, rawDelta) => {
     const delta = Math.min(rawDelta, 1 / 30)

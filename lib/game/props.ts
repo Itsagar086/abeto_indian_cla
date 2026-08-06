@@ -1,5 +1,5 @@
 import * as THREE from "three"
-import { ZONES } from "./data"
+import { ZONES, WATER_LEVEL } from "./data"
 import { surfacePoint, surfaceQuaternion, rng } from "./terrain"
 
 export type PropKind =
@@ -76,6 +76,7 @@ export function buildProps(): PlacedProp[] {
     const pos = surfacePoint(dir, 0)
     const quat = surfaceQuaternion(dir, ang + Math.PI)
     const [a, b] = paletteFor(zoneId, rng(seed))
+    if (pos.length() < WATER_LEVEL + 0.3) return
     props.push({ kind, position: pos, quaternion: quat, scale, colorA: a, colorB: b, seed })
   }
 
