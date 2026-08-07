@@ -20,8 +20,21 @@ const CAMERA_GROUND_CLEARANCE = 0.6
 /** per-frame easing of that lift, so the clamp glides instead of popping */
 const CAMERA_CLAMP_LERP = 0.35
 
-/** scratch for the camera ground clamp — keeps the frame allocation-free */
+/** line-of-sight probe between the player's eye and the camera */
+const CAM_LOS_SAMPLES = 8
+const CAM_LOS_CLEARANCE = 0.35
+const CAM_MIN_DIST = 1.3
+/** pull in fast when the view is blocked, ease back out slowly */
+const CAM_LOS_IN_LERP = 0.4
+const CAM_LOS_OUT_LERP = 0.08
+
+/** scratch for the camera work — keeps the frame allocation-free */
 const _camDir = new THREE.Vector3()
+const _eye = new THREE.Vector3()
+const _losDir = new THREE.Vector3()
+const _losSample = new THREE.Vector3()
+const _losProbe = new THREE.Vector3()
+const _camFinal = new THREE.Vector3()
 
 function useKeys() {
   const keys = useRef<Record<string, boolean>>({})
@@ -53,6 +66,8 @@ export function Player() {
   const forward = useRef(new THREE.Vector3(1, 0, 0))
   const grounded = useRef(false)
   const camPos = useRef(new THREE.Vector3())
+  /** smoothed eye-to-camera distance; 0 means "not yet initialised" */
+  const camDist = useRef(0)
   const stepPhase = useRef(0)
 
   const setNearbyNpc = useGameStore((s) => s.setNearbyNpc)
@@ -181,8 +196,8 @@ export function Player() {
     const desired = position.current.clone().add(behind).add(camUp)
     camPos.current.lerp(desired, talking ? 0.12 : 0.09)
 
-    // hold the camera above the ground it would otherwise slice into, easing
-    // the lift in so cresting a hill glides rather than snaps
+    // hold the ideal camera above the ground it would otherwise slice into,
+    // easing the lift in so cresting a hill glides rather than snaps
     _camDir.copy(camPos.current).normalize()
     const camGround = terrainRadius(_camDir) + CAMERA_GROUND_CLEARANCE
     const camR = camPos.current.length()
@@ -191,9 +206,45 @@ export function Player() {
       camPos.current.setLength(camR + (camGround - camR) * k)
     }
 
-    camera.position.copy(camPos.current)
+    // march the sight line from the player's eye out to that ideal position;
+    // if a ridge crosses it, pull the camera in short of the blockage
+    _eye.copy(position.current).addScaledVector(upNow, 0.9)
+    _losDir.copy(camPos.current).sub(_eye)
+    const fullDist = _losDir.length()
+    if (fullDist > 1e-4) {
+      _losDir.divideScalar(fullDist)
+      let blockedT = 0
+      for (let i = 1; i <= CAM_LOS_SAMPLES; i++) {
+        const t = i / CAM_LOS_SAMPLES
+        _losSample.copy(_eye).addScaledVector(_losDir, fullDist * t)
+        _losProbe.copy(_losSample).normalize()
+        if (_losSample.length() < terrainRadius(_losProbe) + CAM_LOS_CLEARANCE) {
+          blockedT = t
+          break
+        }
+      }
+      const targetDist =
+        blockedT > 0 ? Math.max(blockedT * fullDist - 0.4, CAM_MIN_DIST) : fullDist
+
+      if (camDist.current <= 0) {
+        camDist.current = targetDist
+      } else {
+        const rate = targetDist < camDist.current ? CAM_LOS_IN_LERP : CAM_LOS_OUT_LERP
+        camDist.current += (targetDist - camDist.current) * Math.min(1, rate * dt60)
+      }
+      _camFinal.copy(_eye).addScaledVector(_losDir, camDist.current)
+    } else {
+      _camFinal.copy(camPos.current)
+    }
+
+    // final safety: the pulled-in camera must still not sit inside a hill
+    _camDir.copy(_camFinal).normalize()
+    const finalGround = terrainRadius(_camDir) + CAMERA_GROUND_CLEARANCE
+    if (_camFinal.length() < finalGround) _camFinal.setLength(finalGround)
+
+    camera.position.copy(_camFinal)
     camera.up.copy(upNow)
-    camera.lookAt(position.current.clone().addScaledVector(upNow, 0.9))
+    camera.lookAt(_eye)
 
     // nearest NPC for the interaction prompt
     let nearestId: string | null = null
