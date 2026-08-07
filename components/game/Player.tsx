@@ -15,6 +15,13 @@ const TALK_DISTANCE = 2.4
 const ZONE_ENTER = 0.3
 const ZONE_EXIT = 0.4
 const ZONE_CHECK_FRAMES = 30
+/** how far above the ground the camera is held when it would clip into terrain */
+const CAMERA_GROUND_CLEARANCE = 0.6
+/** per-frame easing of that lift, so the clamp glides instead of popping */
+const CAMERA_CLAMP_LERP = 0.35
+
+/** scratch for the camera ground clamp — keeps the frame allocation-free */
+const _camDir = new THREE.Vector3()
 
 function useKeys() {
   const keys = useRef<Record<string, boolean>>({})
@@ -173,6 +180,17 @@ export function Player() {
     const camUp = upNow.clone().multiplyScalar(INITIAL_CHARACTER.relativeCameraPosition[1] + 1.4)
     const desired = position.current.clone().add(behind).add(camUp)
     camPos.current.lerp(desired, talking ? 0.12 : 0.09)
+
+    // hold the camera above the ground it would otherwise slice into, easing
+    // the lift in so cresting a hill glides rather than snaps
+    _camDir.copy(camPos.current).normalize()
+    const camGround = terrainRadius(_camDir) + CAMERA_GROUND_CLEARANCE
+    const camR = camPos.current.length()
+    if (camR < camGround) {
+      const k = Math.min(1, CAMERA_CLAMP_LERP * dt60)
+      camPos.current.setLength(camR + (camGround - camR) * k)
+    }
+
     camera.position.copy(camPos.current)
     camera.up.copy(upNow)
     camera.lookAt(position.current.clone().addScaledVector(upNow, 0.9))
