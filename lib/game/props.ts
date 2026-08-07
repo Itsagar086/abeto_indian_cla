@@ -67,7 +67,10 @@ export function buildProps(): PlacedProp[] {
     const t1 = new THREE.Vector3().crossVectors(tangent, center).normalize()
     const t2 = new THREE.Vector3().crossVectors(center, t1).normalize()
     const ang = angleOffset
-    const dist = distFrac * zone.radius * 0.045
+    // a pure angular offset in radians. zone.radius is a world-unit value and
+    // must never enter here — multiplying by it flung props tens of degrees
+    // away from the zone they belong to (BUG-102).
+    const dist = distFrac * 0.05
     const dir = center
       .clone()
       .addScaledVector(t1, Math.cos(ang) * dist)
@@ -83,29 +86,29 @@ export function buildProps(): PlacedProp[] {
   // --- bazaar: market stalls ringed around the square, with umbrellas
   for (let i = 0; i < 10; i++) {
     const ang = (i / 10) * Math.PI * 2
-    add("stall", "bazaar", ang, 1.6, 1, 100 + i)
-    add("market-umbrella", "bazaar", ang + 0.15, 1.9, 1, 200 + i)
+    add("stall", "bazaar", ang, 1.4, 1, 100 + i)
+    add("market-umbrella", "bazaar", ang + 0.15, 1.8, 1, 200 + i)
   }
   add("lamp-post", "bazaar", 0.4, 0.6, 1, 150)
   add("lamp-post", "bazaar", 2.4, 0.6, 1, 151)
   add("flag", "bazaar", 1.0, 0.3, 1, 152)
 
   // --- haveli: grand arch entrance + walls
-  add("haveli-arch", "haveli", 0, 0.9, 1.6, 300)
-  add("lamp-post", "haveli", 0.6, 1.3, 1, 301)
-  add("lamp-post", "haveli", -0.6, 1.3, 1, 302)
-  add("flag", "haveli", 0, 1.7, 1.2, 303)
+  add("haveli-arch", "haveli", 0, 0.8, 1.6, 300)
+  add("lamp-post", "haveli", 0.6, 1.2, 1, 301)
+  add("lamp-post", "haveli", -0.6, 1.2, 1, 302)
+  add("flag", "haveli", 0, 1.4, 1.2, 303)
 
   // --- mill: rows of factory blocks
   const millAngles = [0, 0.5, 1.0, 1.6, 2.2, 2.8]
-  millAngles.forEach((a, i) => add("mill-block", "mill", a, 1.3 + (i % 2) * 0.3, 1.3, 400 + i))
+  millAngles.forEach((a, i) => add("mill-block", "mill", a, 1.2 + (i % 2) * 0.6, 1.3, 400 + i))
 
   // --- workshop: single shed + parts
   add("workshop-shed", "workshop", 0, 0.6, 1.2, 500)
   add("lamp-post", "workshop", 1.4, 1.2, 1, 501)
 
   // --- temple: dome + flags on the summit
-  add("temple-dome", "temple", 0, 0.2, 1.8, 600)
+  add("temple-dome", "temple", 0, 0.3, 1.8, 600)
   add("flag", "temple", 0.9, 0.9, 1.3, 601)
   add("flag", "temple", -0.9, 0.9, 1.3, 602)
 
@@ -117,18 +120,18 @@ export function buildProps(): PlacedProp[] {
   // --- grove: mango trees scattered
   const grove = rng(42)
   for (let i = 0; i < 16; i++) {
-    add("mango-tree", "grove", grove() * Math.PI * 2, 0.3 + grove() * 1.6, 0.8 + grove() * 0.5, 800 + i)
+    add("mango-tree", "grove", grove() * Math.PI * 2, 0.5 + grove() * 1.7, 0.8 + grove() * 0.5, 800 + i)
   }
 
   // --- samadhi: peepal trees + quiet stone markers
   for (let i = 0; i < 5; i++) {
-    add("peepal-tree", "samadhi", (i / 5) * Math.PI * 2, 1.3, 1.4, 900 + i)
+    add("peepal-tree", "samadhi", (i / 5) * Math.PI * 2, 1.2, 1.4, 900 + i)
   }
 
   // --- beach: a couple of leaning palms via mango-tree reuse, thin scale
   const beach = rng(77)
   for (let i = 0; i < 6; i++) {
-    add("mango-tree", "beach", beach() * Math.PI * 2, 0.5 + beach() * 1.3, 0.6, 1000 + i)
+    add("mango-tree", "beach", beach() * Math.PI * 2, 0.8 + beach() * 1.0, 0.6, 1000 + i)
   }
 
   return props
