@@ -100,8 +100,10 @@ export function buildProps(): PlacedProp[] {
   add("flag", "haveli", 0, 1.4, 1.2, 303)
 
   // --- mill: rows of factory blocks
-  const millAngles = [0, 0.5, 1.0, 1.6, 2.2, 2.8]
-  millAngles.forEach((a, i) => add("mill-block", "mill", a, 1.2 + (i % 2) * 0.6, 1.3, 400 + i))
+  // evenly around the full circle — clustering them in one arc made the 2.2u
+  // wide blocks intersect each other
+  const millAngles = [0, 1.047, 2.094, 3.142, 4.189, 5.236]
+  millAngles.forEach((a, i) => add("mill-block", "mill", a, 2.0, 1.3, 400 + i))
 
   // --- workshop: single shed + parts
   add("workshop-shed", "workshop", 0, 0.6, 1.2, 500)
@@ -109,8 +111,9 @@ export function buildProps(): PlacedProp[] {
 
   // --- temple: dome + flags on the summit
   add("temple-dome", "temple", 0, 0.3, 1.8, 600)
-  add("flag", "temple", 0.9, 0.9, 1.3, 601)
-  add("flag", "temple", -0.9, 0.9, 1.3, 602)
+  // pushed clear of the dome's ~2.7u footprint
+  add("flag", "temple", 0.9, 2.0, 1.3, 601)
+  add("flag", "temple", -0.9, 2.0, 1.3, 602)
 
   // --- ghat: stepped stone terraces down to the water
   for (let i = 0; i < 6; i++) {
@@ -119,8 +122,24 @@ export function buildProps(): PlacedProp[] {
 
   // --- grove: mango trees scattered
   const grove = rng(42)
+  const GROVE_MIN_SEP = 0.045
+  /** [angle, angular distance] of trees already placed, in the zone's tangent plane */
+  const grovePlaced: [number, number][] = []
   for (let i = 0; i < 16; i++) {
-    add("mango-tree", "grove", grove() * Math.PI * 2, 0.5 + grove() * 1.7, 0.8 + grove() * 0.5, 800 + i)
+    let ang = 0
+    let distFrac = 0
+    // redraw up to 5 times if this tree would land on top of an earlier one
+    for (let attempt = 0; attempt < 6; attempt++) {
+      ang = grove() * Math.PI * 2
+      distFrac = 0.5 + grove() * 1.7
+      const d = distFrac * 0.05
+      const clash = grovePlaced.some(
+        ([a2, d2]) => Math.sqrt(d * d + d2 * d2 - 2 * d * d2 * Math.cos(ang - a2)) < GROVE_MIN_SEP,
+      )
+      if (!clash) break
+    }
+    grovePlaced.push([ang, distFrac * 0.05])
+    add("mango-tree", "grove", ang, distFrac, 0.8 + grove() * 0.5, 800 + i)
   }
 
   // --- samadhi: peepal trees + quiet stone markers
