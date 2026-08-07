@@ -9,6 +9,7 @@ export type PropKind =
   | "mill-block"
   | "ghat-steps"
   | "mango-tree"
+  | "banyan"
   | "workshop-shed"
   | "market-umbrella"
   | "peepal-tree"
@@ -41,6 +42,9 @@ const PALETTE: Record<string, [string, string][]> = {
   samadhi: [["#c9b48f", "#7a6a52"]],
   beach: [["#e0c191", "#c9a876"]],
 }
+
+/** the banyan is bark + leaves, not its zone's two-tone palette */
+const BANYAN_COLORS: [string, string] = ["#6b4a2f", "#4e7a34"]
 
 function paletteFor(zoneId: string, r: () => number): [string, string] {
   const options = PALETTE[zoneId] ?? PALETTE.bazaar
@@ -78,7 +82,7 @@ export function buildProps(): PlacedProp[] {
       .normalize()
     const pos = surfacePoint(dir, 0)
     const quat = surfaceQuaternion(dir, ang + Math.PI)
-    const [a, b] = paletteFor(zoneId, rng(seed))
+    const [a, b] = kind === "banyan" ? BANYAN_COLORS : paletteFor(zoneId, rng(seed))
     if (pos.length() < WATER_LEVEL + 0.3) return
     props.push({ kind, position: pos, quaternion: quat, scale, colorA: a, colorB: b, seed })
   }
@@ -120,27 +124,11 @@ export function buildProps(): PlacedProp[] {
     add("ghat-steps", "ghat", (i / 6) * Math.PI * 2, 1.2, 1, 700 + i)
   }
 
-  // --- grove: mango trees scattered
-  const grove = rng(42)
-  const GROVE_MIN_SEP = 0.045
-  /** [angle, angular distance] of trees already placed, in the zone's tangent plane */
-  const grovePlaced: [number, number][] = []
-  for (let i = 0; i < 16; i++) {
-    let ang = 0
-    let distFrac = 0
-    // redraw up to 5 times if this tree would land on top of an earlier one
-    for (let attempt = 0; attempt < 6; attempt++) {
-      ang = grove() * Math.PI * 2
-      distFrac = 0.5 + grove() * 1.7
-      const d = distFrac * 0.05
-      const clash = grovePlaced.some(
-        ([a2, d2]) => Math.sqrt(d * d + d2 * d2 - 2 * d * d2 * Math.cos(ang - a2)) < GROVE_MIN_SEP,
-      )
-      if (!clash) break
-    }
-    grovePlaced.push([ang, distFrac * 0.05])
-    add("mango-tree", "grove", ang, distFrac, 0.8 + grove() * 0.5, 800 + i)
-  }
+  // --- grove: Dodda Alada Mara is ONE tree — a single giant banyan at the
+  // centre, with a few small companions out at the fringe of its canopy
+  add("banyan", "grove", 0, 0.15, 2.6, 800)
+  const groveCompanions = [0.4, 1.6, 2.7, 3.9, 5.1]
+  groveCompanions.forEach((a, i) => add("mango-tree", "grove", a, 2.2, 0.7, 801 + i))
 
   // --- samadhi: peepal trees + quiet stone markers
   for (let i = 0; i < 5; i++) {

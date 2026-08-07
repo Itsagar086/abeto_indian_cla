@@ -3,6 +3,7 @@
 import { useMemo } from "react"
 import * as THREE from "three"
 import { buildProps, type PlacedProp } from "@/lib/game/props"
+import { rng } from "@/lib/game/terrain"
 
 function PropInstance({ p }: { p: PlacedProp }) {
   const pos = p.position.toArray() as [number, number, number]
@@ -150,6 +151,63 @@ function PropInstance({ p }: { p: PlacedProp }) {
           </mesh>
         </group>
       )
+    case "banyan": {
+      // one organism: a broad canopy held up by a ring of aerial prop roots
+      const r = rng(p.seed)
+      const rootColor = new THREE.Color(p.colorA).multiplyScalar(0.72).getStyle()
+      const aerials = Array.from({ length: 9 }, (_, i) => {
+        const a = (i / 9) * Math.PI * 2 + (r() - 0.5) * 0.45
+        const ring = 1.0 + r() * 0.4
+        return {
+          x: Math.cos(a) * ring,
+          z: Math.sin(a) * ring,
+          rad: 0.05 + r() * 0.03,
+          lean: [(r() - 0.5) * 0.16, 0, (r() - 0.5) * 0.16] as [number, number, number],
+        }
+      })
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          {/* main trunk */}
+          <mesh position={[0, 0.8, 0]} castShadow receiveShadow>
+            <cylinderGeometry args={[0.28, 0.45, 1.6, 7]} />
+            <meshStandardMaterial color={p.colorA} roughness={0.95} />
+          </mesh>
+
+          {/* canopy: one wide mass built from overlapping spheres */}
+          <mesh position={[0, 2.4, 0]} castShadow>
+            <sphereGeometry args={[1.5, 12, 10]} />
+            <meshStandardMaterial color={p.colorB} roughness={0.9} flatShading />
+          </mesh>
+          {([[1.1, 0], [-1.1, 0], [0, 1.1], [0, -1.1]] as [number, number][]).map(([sx, sz], i) => (
+            <mesh key={`c${i}`} position={[sx, 2.2, sz]} castShadow>
+              <sphereGeometry args={[1, 10, 8]} />
+              <meshStandardMaterial color={p.colorB} roughness={0.9} flatShading />
+            </mesh>
+          ))}
+
+          {/* aerial prop roots hanging from the canopy to the ground */}
+          {aerials.map((a, i) => (
+            <mesh key={`a${i}`} position={[a.x, 1, a.z]} rotation={a.lean} castShadow>
+              <cylinderGeometry args={[a.rad, a.rad * 1.15, 2, 6]} />
+              <meshStandardMaterial color={rootColor} roughness={0.95} />
+            </mesh>
+          ))}
+
+          {/* thick surface roots splaying from the base */}
+          {[0.6, 2.7, 4.5].map((a, i) => (
+            <mesh
+              key={`s${i}`}
+              position={[Math.cos(a) * 0.35, 0.1, Math.sin(a) * 0.35]}
+              rotation={[0, -a, -1.3]}
+              castShadow
+            >
+              <cylinderGeometry args={[0.12, 0.12, 0.5, 6]} />
+              <meshStandardMaterial color={rootColor} roughness={0.95} />
+            </mesh>
+          ))}
+        </group>
+      )
+    }
     case "peepal-tree":
       return (
         <group position={pos} quaternion={quat} scale={p.scale}>
