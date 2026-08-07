@@ -16,7 +16,7 @@ export type Zone = {
 export const ZONES: Zone[] = [
   { id: "bazaar", text: "KR Market", center: [25.2, 11.0, 2.3], radius: 9 },
   { id: "mill", text: "Binny Mills", center: [-7.8, 4.2, -29.3], radius: 18 },
-  { id: "ghat", text: "Cauvery Riverside", center: [8.1, -13.8, -12.4], radius: 10 },
+  { id: "ghat", text: "Cauvery Riverside", center: [9.36, -15.95, -14.33], radius: 10 },
   { id: "haveli", text: "Bengaluru Palace", center: [-14.4, -6.1, 27.0], radius: 9 },
   { id: "grove", text: "Dodda Alada Mara", center: [-8.8, -19.2, 2.5], radius: 13 },
   { id: "samadhi", text: "SP Road", center: [27.7, -14.2, 13.4], radius: 8 },
