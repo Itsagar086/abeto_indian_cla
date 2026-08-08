@@ -289,6 +289,16 @@ export function buildPlanetGeometry(detail = 52) {
 
 /* -------------------------------------------------- placement utilities */
 
+/**
+ * Where an npc actually stands: the authored position supplies the direction,
+ * the terrain supplies the radius. Shared by the renderer and the proximity
+ * check so a villager is never hit-tested somewhere they are not drawn.
+ */
+export function npcSurfacePosition(position: Vec3) {
+  const dir = new THREE.Vector3(position[0], position[1], position[2]).normalize()
+  return dir.multiplyScalar(terrainRadius(dir))
+}
+
 /** put an object on the ground at a direction, oriented to the surface */
 export function surfacePoint(dir: THREE.Vector3, offset = 0) {
   const r = terrainRadius(dir) + offset

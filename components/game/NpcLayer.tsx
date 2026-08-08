@@ -5,7 +5,7 @@ import * as THREE from "three"
 import { Html } from "@react-three/drei"
 import { useFrame } from "@react-three/fiber"
 import { NPCS, type Npc } from "@/lib/game/data"
-import { surfaceQuaternion, terrainRadius } from "@/lib/game/terrain"
+import { npcSurfacePosition, surfaceQuaternion, terrainRadius } from "@/lib/game/terrain"
 import { useGameStore, useNpcHasQuest } from "@/lib/game/store"
 
 /** shared scratch vectors so the per-frame line-of-sight test allocates nothing */
@@ -13,9 +13,7 @@ const _samplePos = new THREE.Vector3()
 const _sampleDir = new THREE.Vector3()
 
 function NpcFigure({ npc }: { npc: Npc }) {
-  const pos = new THREE.Vector3(...npc.position)
-  const dir = pos.clone().normalize()
-  pos.copy(dir.multiplyScalar(terrainRadius(dir)))
+  const pos = npcSurfacePosition(npc.position)
   const up = pos.clone().normalize()
   const quat = surfaceQuaternion(up, 0)
   const hasQuest = useNpcHasQuest(npc.id)

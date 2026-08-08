@@ -4,7 +4,7 @@ import { useRef, useEffect, useMemo } from "react"
 import { useFrame, useThree } from "@react-three/fiber"
 import * as THREE from "three"
 import { NPCS, PHYSICS, INITIAL_CHARACTER, ZONES } from "@/lib/game/data"
-import { terrainRadius } from "@/lib/game/terrain"
+import { npcSurfacePosition, terrainRadius } from "@/lib/game/terrain"
 import { useGameStore } from "@/lib/game/store"
 import { playerState } from "@/lib/game/playerState"
 
@@ -73,7 +73,8 @@ export function Player() {
   const setNearbyNpc = useGameStore((s) => s.setNearbyNpc)
   const carrying = useGameStore((s) => s.carrying)
 
-  const npcVecs = useMemo(() => NPCS.map((n) => new THREE.Vector3(...n.position)), [])
+  // hit-test against where each npc is actually drawn, not the authored point
+  const npcVecs = useMemo(() => NPCS.map((n) => npcSurfacePosition(n.position)), [])
 
   // zone entry detection: unit direction of each zone centre, plus the zone we
   // are currently inside (kept in a ref so this never re-renders the player)
