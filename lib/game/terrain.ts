@@ -217,6 +217,13 @@ const C = {
 const _tmpA = new THREE.Vector3()
 const _tmpB = new THREE.Vector3()
 const _tmpC = new THREE.Vector3()
+/**
+ * slopeAt's own probe vector. It must NOT be `_rv`: slopeAt passes this
+ * straight into terrainRadius, which calls roadDistance, which uses `_rv` as
+ * its own scratch — the offset direction was being overwritten mid-evaluation
+ * and the resulting bogus gradients pinned the slope at 1.0 over half the map.
+ */
+const _slopeV = new THREE.Vector3()
 
 /** slope: 0 = flat ground, 1 = vertical cliff */
 function slopeAt(dir: THREE.Vector3, r: number) {
@@ -225,9 +232,9 @@ function slopeAt(dir: THREE.Vector3, r: number) {
   _tmpB.copy(up).cross(dir).normalize()
   _tmpC.copy(dir).cross(_tmpB).normalize()
   const eps = 0.012
-  const d1 = _rv.copy(dir).addScaledVector(_tmpB, eps).normalize()
+  const d1 = _slopeV.copy(dir).addScaledVector(_tmpB, eps).normalize()
   const r1 = terrainRadius(d1)
-  const d2 = _rv.copy(dir).addScaledVector(_tmpC, eps).normalize()
+  const d2 = _slopeV.copy(dir).addScaledVector(_tmpC, eps).normalize()
   const r2 = terrainRadius(d2)
   const grad = Math.sqrt((r1 - r) ** 2 + (r2 - r) ** 2) / (eps * r)
   return Math.min(1, grad * 0.9)
@@ -241,8 +248,8 @@ export function terrainColor(dir: THREE.Vector3, r: number, target: THREE.Color)
 
   if (r < WATER_LEVEL + 0.55) {
     target.copy(r < WATER_LEVEL ? C.deepSand : C.sand)
-  } else if (slope > 0.74 || r > 33.2) {
-    target.copy(slope > 0.88 ? C.rockDark : C.rock)
+  } else if (slope > 0.55 || r > 33.2) {
+    target.copy(slope > 0.75 ? C.rockDark : C.rock)
     if (r > 34.4) target.lerp(C.snowless, Math.min(1, (r - 34.4) / 2))
   } else {
     const shade = fbm(dir.x * 9.3 + 3, dir.y * 9.3 - 7, dir.z * 9.3 + 1, 2)
