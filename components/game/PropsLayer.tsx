@@ -4,7 +4,7 @@ import { useMemo, useRef } from "react"
 import * as THREE from "three"
 import { Outlines } from "@react-three/drei"
 import { useFrame } from "@react-three/fiber"
-import { buildProps, type PlacedProp } from "@/lib/game/props"
+import { buildProps, metroTangent, TRACK_RADIUS, type PlacedProp } from "@/lib/game/props"
 import { rng } from "@/lib/game/terrain"
 import { toonGradient } from "@/lib/game/toon"
 import { KANNADA_FONT_STACK, makeSignTexture } from "@/lib/game/signage"
@@ -486,6 +486,43 @@ function PropInstance({ p }: { p: PlacedProp }) {
     }
     case "traffic-signal":
       return <TrafficSignal p={p} />
+    case "metro-pillar": {
+      if (!p.aux) return null
+      const height = p.aux[0].distanceTo(p.aux[1])
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          {/* sunk 0.5 below grade like every other rooted structure */}
+          <mesh position={[0, height / 2 - 0.25, 0]} castShadow receiveShadow>
+            <cylinderGeometry args={[0.14, 0.2, height + 0.5, 8]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          <mesh position={[0, height, 0]} castShadow>
+            <boxGeometry args={[0.7, 0.12, 0.3]} />
+            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+        </group>
+      )
+    }
+    case "metro-track": {
+      if (!p.aux) return null
+      const span = p.aux[0].distanceTo(p.aux[1]) + 0.05
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          <mesh castShadow receiveShadow>
+            <boxGeometry args={[span, 0.18, 0.55]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {/* darker underside */}
+          <mesh position={[0, -0.1, 0]}>
+            <boxGeometry args={[span, 0.04, 0.5]} />
+            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+          </mesh>
+        </group>
+      )
+    }
     case "zone-signboard": {
       const tex = p.signText
         ? makeSignTexture(
@@ -541,6 +578,102 @@ function PropInstance({ p }: { p: PlacedProp }) {
   }
 }
 
+/* ------------------------------------------------------------- namma metro */
+
+const COACHES = 3
+/** radians/sec — a full lap in about 39s */
+const TRAIN_SPEED = 0.16
+const COACH_GAP = 0.045
+const TRAIN_RIDE_HEIGHT = 0.28
+const METRO_PURPLE = "#7a3f9d"
+
+// scratch, so the train costs no allocations per frame
+const _tDir = new THREE.Vector3()
+const _tTan = new THREE.Vector3()
+const _tSide = new THREE.Vector3()
+const _tBasis = new THREE.Matrix4()
+
+function Coach({ lead }: { lead: boolean }) {
+  return (
+    <>
+      <mesh castShadow>
+        <boxGeometry args={[0.9, 0.35, 0.38]} />
+        <meshToonMaterial color={METRO_PURPLE} gradientMap={toonGradient} />
+        <Ink />
+      </mesh>
+      {/* window band */}
+      <mesh position={[0, 0.05, 0]}>
+        <boxGeometry args={[0.78, 0.12, 0.4]} />
+        <meshToonMaterial color="#232733" gradientMap={toonGradient} />
+      </mesh>
+      {/* livery stripe */}
+      <mesh position={[0, -0.09, 0]}>
+        <boxGeometry args={[0.9, 0.045, 0.4]} />
+        <meshToonMaterial color="#f4f2ee" gradientMap={toonGradient} />
+      </mesh>
+      {/* slightly inset end caps */}
+      {[-0.46, 0.46].map((x, i) => (
+        <mesh key={i} position={[x, 0, 0]} castShadow>
+          <boxGeometry args={[0.06, 0.3, 0.33]} />
+          <meshToonMaterial color={METRO_PURPLE} gradientMap={toonGradient} />
+        </mesh>
+      ))}
+      {lead &&
+        [-0.11, 0.11].map((z, i) => (
+          <mesh key={i} position={[0.5, -0.06, z]}>
+            <sphereGeometry args={[0.035, 8, 8]} />
+            <meshToonMaterial
+              color="#fff3c4"
+              emissive="#ffd98a"
+              emissiveIntensity={0.9}
+              gradientMap={toonGradient}
+            />
+          </mesh>
+        ))}
+    </>
+  )
+}
+
+/**
+ * Lives here rather than in Scene.tsx because it is welded to the viaduct it
+ * rides: same circle basis, same TRACK_RADIUS, same toon/outline setup as the
+ * metro props a few cases above. Keeping them apart would let the deck and the
+ * train drift out of alignment.
+ */
+function MetroTrain() {
+  const coaches = useRef<(THREE.Group | null)[]>(new Array(COACHES).fill(null))
+
+  useFrame(({ clock }) => {
+    const head = clock.getElapsedTime() * TRAIN_SPEED
+    for (let i = 0; i < COACHES; i++) {
+      const g = coaches.current[i]
+      if (!g) continue
+      const t = head - i * COACH_GAP
+      metroTangent(t, _tTan, _tDir) // fills _tDir with the point, _tTan the heading
+      g.position.copy(_tDir).multiplyScalar(TRACK_RADIUS + TRAIN_RIDE_HEIGHT)
+      // local +X runs along the track, +Y points away from the planet
+      _tSide.crossVectors(_tTan, _tDir).normalize()
+      _tBasis.makeBasis(_tTan, _tDir, _tSide)
+      g.quaternion.setFromRotationMatrix(_tBasis)
+    }
+  })
+
+  return (
+    <group>
+      {Array.from({ length: COACHES }, (_, i) => (
+        <group
+          key={i}
+          ref={(g) => {
+            coaches.current[i] = g
+          }}
+        >
+          <Coach lead={i === 0} />
+        </group>
+      ))}
+    </group>
+  )
+}
+
 export function PropsLayer() {
   const props = useMemo(() => buildProps(), [])
   return (
@@ -548,6 +681,7 @@ export function PropsLayer() {
       {props.map((p, i) => (
         <PropInstance key={i} p={p} />
       ))}
+      <MetroTrain />
     </group>
   )
 }

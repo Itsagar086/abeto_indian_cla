@@ -1,6 +1,6 @@
 import * as THREE from "three"
 import { ZONES, WATER_LEVEL } from "./data"
-import { surfacePoint, surfaceQuaternion, rng, roadDistance } from "./terrain"
+import { surfacePoint, surfaceQuaternion, rng, roadDistance, terrainRadius } from "./terrain"
 
 export type PropKind =
   | "stall"
@@ -22,6 +22,8 @@ export type PropKind =
   | "wire"
   | "traffic-signal"
   | "zone-signboard"
+  | "metro-pillar"
+  | "metro-track"
 
 export type PlacedProp = {
   kind: PropKind
@@ -31,7 +33,11 @@ export type PlacedProp = {
   colorA: string
   colorB: string
   seed: number
-  /** world-space endpoints. Only "wire" uses this, and it ignores `position`. */
+  /**
+   * World-space endpoints. "wire" uses them directly and ignores `position`;
+   * "metro-pillar" carries [footing, deck] and "metro-track" [endA, endB] so
+   * the renderer can derive height and span.
+   */
   aux?: [THREE.Vector3, THREE.Vector3]
   /** bilingual plate copy. Only "zone-signboard" uses this. */
   signText?: { kannada: string; english: string }
@@ -64,6 +70,100 @@ const KIND_COLORS: Partial<Record<PropKind, [string, string]>> = {
   wire: ["#2a2a2a", "#1e1e1e"],
   "traffic-signal": ["#2f2b26", "#1d1a17"],
   "zone-signboard": ["#1e5a3a", "#ffffff"],
+  "metro-pillar": ["#b8b2a6", "#9a948a"],
+  "metro-track": ["#9a948a", "#7f7a71"],
+}
+
+/* ------------------------------------------------------------- namma metro */
+
+/**
+ * The metro rides the full great circle through KR Market and Binny Mills, so
+ * it laps the planet rather than shuttling. Everything — pillars, guideway and
+ * train — is parameterised off this one circle.
+ */
+const METRO_START = new THREE.Vector3(
+  ...(ZONES.find((z) => z.id === "bazaar")?.center ?? [1, 0, 0]),
+).normalize()
+export const METRO_AXIS = new THREE.Vector3()
+  .crossVectors(
+    METRO_START,
+    new THREE.Vector3(...(ZONES.find((z) => z.id === "mill")?.center ?? [0, 1, 0])).normalize(),
+  )
+  .normalize()
+
+/** unit direction on the metro circle at parameter t, written into `target` */
+export function metroDir(t: number, target: THREE.Vector3) {
+  return target.copy(METRO_START).applyAxisAngle(METRO_AXIS, t)
+}
+
+/** direction of travel at t. d/dt of a rotation about an axis is axis x dir. */
+export function metroTangent(t: number, target: THREE.Vector3, dir: THREE.Vector3) {
+  metroDir(t, dir)
+  return target.crossVectors(METRO_AXIS, dir).normalize()
+}
+
+const METRO_CLEARANCE = 2.2
+const METRO_STATIONS = Math.round((Math.PI * 2) / 0.09)
+const METRO_STEP = (Math.PI * 2) / METRO_STATIONS
+
+/** highest ground anywhere under the line, so the deck clears all of it */
+export const TRACK_RADIUS = (() => {
+  const probe = new THREE.Vector3()
+  let peak = 0
+  for (let i = 0; i < 720; i++) {
+    peak = Math.max(peak, terrainRadius(metroDir((i / 720) * Math.PI * 2, probe)))
+  }
+  return Math.ceil(peak + METRO_CLEARANCE)
+})()
+
+/** viaduct pillars and deck segments around the whole circle */
+function placeMetro(props: PlacedProp[]) {
+  const [pillarA, pillarB] = KIND_COLORS["metro-pillar"] ?? ["#b8b2a6", "#9a948a"]
+  const [trackA, trackB] = KIND_COLORS["metro-track"] ?? ["#9a948a", "#7f7a71"]
+  const dir = new THREE.Vector3()
+  const nextDir = new THREE.Vector3()
+  let seed = 1500
+
+  for (let i = 0; i < METRO_STATIONS; i++) {
+    const t = i * METRO_STEP
+    metroDir(t, dir)
+
+    // pillar, unless its footing would be in the water — the deck simply
+    // spans those gaps
+    const ground = terrainRadius(dir)
+    if (ground >= WATER_LEVEL + 0.3) {
+      const base = dir.clone().multiplyScalar(ground)
+      const top = dir.clone().multiplyScalar(TRACK_RADIUS)
+      const tangent = new THREE.Vector3().crossVectors(METRO_AXIS, dir).normalize()
+      props.push({
+        kind: "metro-pillar",
+        position: base,
+        quaternion: surfaceQuaternion(dir, spinAlong(dir, tangent)),
+        scale: 1,
+        colorA: pillarA,
+        colorB: pillarB,
+        seed: seed++,
+        aux: [base, top],
+      })
+    }
+
+    // deck segment to the next station, placed whether or not a pillar stood
+    metroDir(t + METRO_STEP, nextDir)
+    const endA = dir.clone().multiplyScalar(TRACK_RADIUS)
+    const endB = nextDir.clone().multiplyScalar(TRACK_RADIUS)
+    const midDir = endA.clone().add(endB).normalize()
+    const midTangent = new THREE.Vector3().crossVectors(METRO_AXIS, midDir).normalize()
+    props.push({
+      kind: "metro-track",
+      position: midDir.clone().multiplyScalar(TRACK_RADIUS),
+      quaternion: surfaceQuaternion(midDir, spinAlong(midDir, midTangent)),
+      scale: 1,
+      colorA: trackA,
+      colorB: trackB,
+      seed: seed++,
+      aux: [endA, endB],
+    })
+  }
 }
 
 function paletteFor(zoneId: string, r: () => number): [string, string] {
@@ -476,6 +576,7 @@ export function buildProps(): PlacedProp[] {
   }
 
   placeRoadFurniture(props)
+  placeMetro(props)
 
   return props
 }
