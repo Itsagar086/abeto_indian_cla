@@ -58,7 +58,7 @@ function Clouds() {
   }, [])
 
   useFrame((_, delta) => {
-    if (groupRef.current) groupRef.current.rotation.y += 0.002 * delta
+    if (groupRef.current) groupRef.current.rotation.y += 0.018 * delta
   })
 
   return (

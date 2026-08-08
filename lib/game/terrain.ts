@@ -241,8 +241,8 @@ export function terrainColor(dir: THREE.Vector3, r: number, target: THREE.Color)
 
   if (r < WATER_LEVEL + 0.55) {
     target.copy(r < WATER_LEVEL ? C.deepSand : C.sand)
-  } else if (slope > 0.62 || r > 33.2) {
-    target.copy(slope > 0.8 ? C.rockDark : C.rock)
+  } else if (slope > 0.74 || r > 33.2) {
+    target.copy(slope > 0.88 ? C.rockDark : C.rock)
     if (r > 34.4) target.lerp(C.snowless, Math.min(1, (r - 34.4) / 2))
   } else {
     const shade = fbm(dir.x * 9.3 + 3, dir.y * 9.3 - 7, dir.z * 9.3 + 1, 2)
