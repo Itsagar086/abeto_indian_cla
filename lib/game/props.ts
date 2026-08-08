@@ -323,12 +323,28 @@ function placeRoadFurniture(props: PlacedProp[]) {
     const outward = arcTangent(zDir, oDir)
     if (!outward) return
 
+    // Never walk past 40% of the arc: on a short road 0.24 rad would carry the
+    // board over the midpoint and leave it sitting closer to the neighbouring
+    // zone than to its own. The same 40% is applied against the CLOSEST zone in
+    // any direction, not just this arc's partner — a long road can still pass
+    // near an unrelated zone (beach's road to KR Market skirts the temple).
+    const arcLength = zDir.angleTo(oDir)
+    let nearestOther = Math.PI
+    for (const o of ZONES) {
+      if (o.id === zone.id) continue
+      nearestOther = Math.min(
+        nearestOther,
+        zDir.angleTo(new THREE.Vector3(...o.center).normalize()),
+      )
+    }
+    const walk = Math.min(SIGN_ANGLE, 0.4 * arcLength, 0.4 * nearestOther)
+
     // first side, then the other, then the same two a little further out
     const attempts: [number, number][] = [
-      [SIGN_ANGLE, 1],
-      [SIGN_ANGLE, -1],
-      [SIGN_ANGLE + SIGN_RETRY, 1],
-      [SIGN_ANGLE + SIGN_RETRY, -1],
+      [walk, 1],
+      [walk, -1],
+      [walk + SIGN_RETRY, 1],
+      [walk + SIGN_RETRY, -1],
     ]
     for (let attempt = 0; attempt < attempts.length; attempt++) {
       const [along, side] = attempts[attempt]
