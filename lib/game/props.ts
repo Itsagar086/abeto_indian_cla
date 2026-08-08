@@ -1,6 +1,6 @@
 import * as THREE from "three"
 import { ZONES, WATER_LEVEL } from "./data"
-import { surfacePoint, surfaceQuaternion, rng } from "./terrain"
+import { surfacePoint, surfaceQuaternion, rng, roadDistance } from "./terrain"
 
 export type PropKind =
   | "stall"
@@ -66,7 +66,7 @@ function paletteFor(zoneId: string, r: () => number): [string, string] {
  * rather than imported because that list is module-private there; if it ever
  * changes, this must change with it.
  */
-const ROAD_PAIRS: [string, string][] = [
+export const ROAD_PAIRS: [string, string][] = [
   ["bazaar", "beach"],
   ["beach", "temple"],
   ["bazaar", "samadhi"],
@@ -83,6 +83,11 @@ const ROAD_PAIRS: [string, string][] = [
 const ROAD_STEP = 0.06
 const RAIL_OFFSET = 0.055
 const POLE_OFFSET = 0.07
+/** minimum roadDistance any furniture must keep from every road ribbon */
+const RIBBON_CLEAR = 1.15
+/** verge band the tufts scatter across, in radians either side of the arc */
+const TUFT_NEAR = 0.05
+const TUFT_SPAN = 0.035
 const _UP_Y = new THREE.Vector3(0, 1, 0)
 
 /** rotate `dir` by `phi` radians toward `axis` (both unit, mutually perpendicular) */
@@ -129,6 +134,10 @@ function placeRoadFurniture(props: PlacedProp[]) {
     let seed = 5000 + roadIndex * 300
 
     const push = (kind: PropKind, dir: THREE.Vector3, spin: number) => {
+      // nothing may stand on a road ribbon or its very edge. Checked against
+      // every arc, so this also clears the pile-ups where roads converge on a
+      // zone centre and a rail offset from one road lands on another.
+      if (roadDistance(dir) < RIBBON_CLEAR) return
       const pos = surfacePoint(dir, 0)
       if (pos.length() < WATER_LEVEL + 0.3) return
       const [colorA, colorB] = KIND_COLORS[kind] ?? ["#cccccc", "#999999"]
@@ -170,7 +179,7 @@ function placeRoadFurniture(props: PlacedProp[]) {
       // two tufts scattered across both verges
       for (let k = 0; k < 2; k++) {
         const side = rand() < 0.5 ? -1 : 1
-        const tuftDir = offsetDir(dir, perp, (0.06 + rand() * 0.06) * side)
+        const tuftDir = offsetDir(dir, perp, (TUFT_NEAR + rand() * TUFT_SPAN) * side)
         push("grass-tuft", tuftDir, rand() * Math.PI * 2)
       }
     }

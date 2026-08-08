@@ -358,9 +358,11 @@ function PropInstance({ p }: { p: PlacedProp }) {
       // posts are 0.05 across and the rail 0.05 deep — all too thin to ink
       return (
         <group position={pos} quaternion={quat} scale={p.scale}>
+          {/* posts run 1.0 long centred at -0.15, so 0.65 is buried and only
+              0.35 shows — the verge is too uneven for a surface-sitting post */}
           {[-0.4, 0.4].map((x, i) => (
-            <mesh key={i} position={[x, 0.175, 0]} castShadow>
-              <cylinderGeometry args={[0.025, 0.025, 0.35, 6]} />
+            <mesh key={i} position={[x, -0.15, 0]} castShadow>
+              <cylinderGeometry args={[0.025, 0.025, 1, 6]} />
               <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
             </mesh>
           ))}
