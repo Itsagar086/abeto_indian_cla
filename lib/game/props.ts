@@ -21,6 +21,7 @@ export type PropKind =
   | "grass-tuft"
   | "wire"
   | "traffic-signal"
+  | "zone-signboard"
 
 export type PlacedProp = {
   kind: PropKind
@@ -32,6 +33,8 @@ export type PlacedProp = {
   seed: number
   /** world-space endpoints. Only "wire" uses this, and it ignores `position`. */
   aux?: [THREE.Vector3, THREE.Vector3]
+  /** bilingual plate copy. Only "zone-signboard" uses this. */
+  signText?: { kannada: string; english: string }
 }
 
 const PALETTE: Record<string, [string, string][]> = {
@@ -60,6 +63,7 @@ const KIND_COLORS: Partial<Record<PropKind, [string, string]>> = {
   "grass-tuft": ["#7dbb5a", "#5f9444"],
   wire: ["#2a2a2a", "#1e1e1e"],
   "traffic-signal": ["#2f2b26", "#1d1a17"],
+  "zone-signboard": ["#1e5a3a", "#ffffff"],
 }
 
 function paletteFor(zoneId: string, r: () => number): [string, string] {
@@ -105,6 +109,27 @@ const POLE_TIP = 2.5
 /** signals stand this far out along each road leaving KR Market */
 const SIGNAL_ANGLE = 0.32
 const SIGNAL_OFFSET = 0.06
+
+/** BBMP-style bilingual plates at each zone's road entry */
+const SIGN_ANGLE = 0.24
+const SIGN_OFFSET = 0.05
+const SIGN_RETRY = 0.03
+
+const ZONE_SIGNS: Record<string, { kannada: string; english: string }> = {
+  bazaar: { kannada: "ಕೆ.ಆರ್. ಮಾರುಕಟ್ಟೆ", english: "K.R. Market" },
+  mill: { kannada: "ಬಿನ್ನಿ ಮಿಲ್", english: "Binny Mills" },
+  ghat: { kannada: "ಕಾವೇರಿ ನದಿತೀರ", english: "Cauvery Riverside" },
+  haveli: { kannada: "ಬೆಂಗಳೂರು ಅರಮನೆ", english: "Bengaluru Palace" },
+  grove: { kannada: "ದೊಡ್ಡ ಆಲದ ಮರ", english: "Dodda Alada Mara" },
+  samadhi: { kannada: "ಎಸ್.ಪಿ. ರಸ್ತೆ", english: "S.P. Road" },
+  workshop: { kannada: "ಗೋಪಾಲನ ಗ್ಯಾರೇಜ್", english: "Gopal's Garage" },
+  temple: { kannada: "ನಂದಿ ಬೆಟ್ಟ ದೇವಸ್ಥಾನ", english: "Nandi Betta Temple" },
+  beach: { kannada: "ಸಂಪಂಗಿ ಕೆರೆ", english: "Sampangi Kere" },
+}
+
+/** result of a signboard placement attempt, for reporting */
+export type SignPlacement = { zone: string; placed: boolean; attempt: number }
+export const signPlacements: SignPlacement[] = []
 /** verge band the tufts scatter across, in radians either side of the arc */
 const TUFT_NEAR = 0.05
 const TUFT_SPAN = 0.035
@@ -280,6 +305,65 @@ function placeRoadFurniture(props: PlacedProp[]) {
       })
     }
   }
+
+  // --- one bilingual signboard at each zone's road entry
+  signPlacements.length = 0
+  const [signA, signB] = KIND_COLORS["zone-signboard"] ?? ["#1e5a3a", "#ffffff"]
+  ZONES.forEach((zone, zi) => {
+    const copy = ZONE_SIGNS[zone.id]
+    if (!copy) return
+    const pair = ROAD_PAIRS.find(([x, y]) => x === zone.id || y === zone.id)
+    if (!pair) return
+    const otherId = pair[0] === zone.id ? pair[1] : pair[0]
+    const other = byId.get(otherId)
+    if (!other) return
+
+    const zDir = new THREE.Vector3(...zone.center).normalize()
+    const oDir = new THREE.Vector3(...other.center).normalize()
+    const outward = arcTangent(zDir, oDir)
+    if (!outward) return
+
+    // first side, then the other, then the same two a little further out
+    const attempts: [number, number][] = [
+      [SIGN_ANGLE, 1],
+      [SIGN_ANGLE, -1],
+      [SIGN_ANGLE + SIGN_RETRY, 1],
+      [SIGN_ANGLE + SIGN_RETRY, -1],
+    ]
+    for (let attempt = 0; attempt < attempts.length; attempt++) {
+      const [along, side] = attempts[attempt]
+      const onRoad = zDir
+        .clone()
+        .multiplyScalar(Math.cos(along))
+        .addScaledVector(outward, Math.sin(along))
+        .normalize()
+      const tangent = arcTangent(onRoad, oDir)
+      if (!tangent) continue
+      const perp = new THREE.Vector3().crossVectors(onRoad, tangent).normalize()
+      const dir = offsetDir(onRoad, perp, SIGN_OFFSET * side)
+      if (roadDistance(dir) < RIBBON_CLEAR) continue
+      const pos = surfacePoint(dir, 0)
+      if (pos.length() < WATER_LEVEL + 0.3) continue
+      const boardTan = arcTangent(dir, oDir)
+      if (!boardTan) continue
+      // local +X onto the perpendicular leaves local +Z down the road, so the
+      // plate faces someone walking the arc
+      const boardPerp = new THREE.Vector3().crossVectors(dir, boardTan).normalize()
+      props.push({
+        kind: "zone-signboard",
+        position: pos,
+        quaternion: surfaceQuaternion(dir, spinAlong(dir, boardPerp)),
+        scale: 1,
+        colorA: signA,
+        colorB: signB,
+        seed: 1400 + zi,
+        signText: copy,
+      })
+      signPlacements.push({ zone: zone.id, placed: true, attempt: attempt + 1 })
+      return
+    }
+    signPlacements.push({ zone: zone.id, placed: false, attempt: attempts.length })
+  })
 }
 
 export function buildProps(): PlacedProp[] {

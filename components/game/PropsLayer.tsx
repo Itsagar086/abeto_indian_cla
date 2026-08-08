@@ -7,6 +7,7 @@ import { useFrame } from "@react-three/fiber"
 import { buildProps, type PlacedProp } from "@/lib/game/props"
 import { rng } from "@/lib/game/terrain"
 import { toonGradient } from "@/lib/game/toon"
+import { KANNADA_FONT_STACK, makeSignTexture } from "@/lib/game/signage"
 
 const INK = "#2c2620"
 const EDGE = 0.035
@@ -485,6 +486,56 @@ function PropInstance({ p }: { p: PlacedProp }) {
     }
     case "traffic-signal":
       return <TrafficSignal p={p} />
+    case "zone-signboard": {
+      const tex = p.signText
+        ? makeSignTexture(
+            [
+              { text: p.signText.kannada, font: `54px ${KANNADA_FONT_STACK}`, color: "#ffffff" },
+              {
+                text: p.signText.english,
+                font: '38px "Segoe UI", system-ui, sans-serif',
+                color: "#e6f2e9",
+              },
+            ],
+            p.colorA,
+            p.colorB,
+          )
+        : null
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          {/* posts sunk 0.4 below grade, 1.5 showing */}
+          {[-0.55, 0.55].map((x, i) => (
+            <mesh key={i} position={[x, 0.55, 0]} castShadow>
+              <cylinderGeometry args={[0.02, 0.02, 1.9, 6]} />
+              <meshToonMaterial color="#4a4038" gradientMap={toonGradient} />
+            </mesh>
+          ))}
+          <mesh position={[0, 1.35, 0]} castShadow>
+            <boxGeometry args={[1.5, 0.75, 0.06]} />
+            {/* box material order is +X -X +Y -Y +Z -Z; only the two broad
+                faces carry the plate, the thin edges stay flat green */}
+            {[0, 1, 2, 3].map((slot) => (
+              <meshToonMaterial
+                key={slot}
+                attach={`material-${slot}`}
+                color={p.colorA}
+                gradientMap={toonGradient}
+              />
+            ))}
+            {[4, 5].map((slot) => (
+              <meshToonMaterial
+                key={slot}
+                attach={`material-${slot}`}
+                color="#ffffff"
+                map={tex ?? undefined}
+                gradientMap={toonGradient}
+              />
+            ))}
+            <Ink />
+          </mesh>
+        </group>
+      )
+    }
     default:
       return null
   }
