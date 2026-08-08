@@ -4,7 +4,7 @@ import { useMemo, useRef } from "react"
 import * as THREE from "three"
 import { Outlines } from "@react-three/drei"
 import { useFrame } from "@react-three/fiber"
-import { buildProps, metroTangent, TRACK_RADIUS, type PlacedProp } from "@/lib/game/props"
+import { buildProps, deckPoint, metroTrainState, type PlacedProp } from "@/lib/game/props"
 import { rng } from "@/lib/game/terrain"
 import { toonGradient } from "@/lib/game/toon"
 import { KANNADA_FONT_STACK, makeSignTexture } from "@/lib/game/signage"
@@ -486,20 +486,287 @@ function PropInstance({ p }: { p: PlacedProp }) {
     }
     case "traffic-signal":
       return <TrafficSignal p={p} />
+    case "gopuram": {
+      // four tiers shrinking ~72% a level, alternating stone and red
+      const tiers = [1.3, 0.95, 0.7, 0.5]
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          {/* base, sunk 0.6 below grade */}
+          <mesh position={[0, 0.15, 0]} castShadow receiveShadow>
+            <boxGeometry args={[1.6, 1.5, 1.6]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {tiers.map((w, i) => (
+            <mesh key={i} position={[0, 1.125 + i * 0.45, 0]} castShadow receiveShadow>
+              <boxGeometry args={[w, 0.45, w]} />
+              <meshToonMaterial
+                color={i % 2 === 0 ? p.colorB : p.colorA}
+                gradientMap={toonGradient}
+              />
+              <Ink />
+            </mesh>
+          ))}
+          {/* barrel-vault cap and gold finial */}
+          <mesh position={[0, 2.825, 0]} castShadow>
+            <boxGeometry args={[0.55, 0.25, 0.3]} />
+            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          <mesh position={[0, 3.04, 0]} castShadow>
+            <sphereGeometry args={[0.09, 10, 10]} />
+            <meshToonMaterial color="#f2d060" gradientMap={toonGradient} />
+          </mesh>
+          {/* doorway on -Z, the face looking down the approach */}
+          <mesh position={[0, 0.32, -0.81]}>
+            <boxGeometry args={[0.45, 0.62, 0.08]} />
+            <meshToonMaterial color="#2a211c" gradientMap={toonGradient} />
+          </mesh>
+        </group>
+      )
+    }
+    case "temple-court":
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          <mesh position={[0, -0.175, 0]} castShadow receiveShadow>
+            <boxGeometry args={[2.6, 0.85, 2.2]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {([[-1.1, -0.9], [1.1, -0.9], [-1.1, 0.9], [1.1, 0.9]] as [number, number][]).map(
+            ([x, z], i) => (
+              <mesh key={i} position={[x, 0.7, z]} castShadow>
+                <boxGeometry args={[0.15, 0.9, 0.15]} />
+                <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+                <Ink />
+              </mesh>
+            ),
+          )}
+          {/* mandapa roof over the back half only, toward the shrine */}
+          <mesh position={[0, 1.2, 0.55]} castShadow>
+            <boxGeometry args={[2.4, 0.1, 1.1]} />
+            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+        </group>
+      )
+    case "nandi-statue":
+      // the bull looks along local +X, which aimAtZone points at the shrine
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          <mesh position={[0, -0.2, 0]} castShadow receiveShadow>
+            <boxGeometry args={[0.9, 0.8, 0.6]} />
+            <meshToonMaterial color="#b8a888" gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {/* body lying along X */}
+          <mesh position={[0, 0.48, 0]} rotation={[0, 0, Math.PI / 2]} castShadow>
+            <capsuleGeometry args={[0.28, 0.5, 4, 10]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {/* shoulder hump */}
+          <mesh position={[0.05, 0.7, 0]} castShadow>
+            <sphereGeometry args={[0.16, 10, 8]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {/* head and horns */}
+          <mesh position={[0.5, 0.56, 0]} castShadow>
+            <boxGeometry args={[0.3, 0.3, 0.3]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {[-0.11, 0.11].map((z, i) => (
+            <mesh key={i} position={[0.55, 0.75, z]} rotation={[0, 0, -0.3]} castShadow>
+              <coneGeometry args={[0.05, 0.16, 6]} />
+              <meshToonMaterial color="#d9cdb4" gradientMap={toonGradient} />
+            </mesh>
+          ))}
+          {/* stub legs */}
+          {([[-0.22, -0.16], [-0.22, 0.16], [0.22, -0.16], [0.22, 0.16]] as [number, number][]).map(
+            ([x, z], i) => (
+              <mesh key={i} position={[x, 0.32, z]} castShadow>
+                <cylinderGeometry args={[0.07, 0.07, 0.3, 6]} />
+                <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+              </mesh>
+            ),
+          )}
+        </group>
+      )
+    case "temple-steps":
+      // treads march downhill along local -Z
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          {[0, 1, 2, 3, 4, 5].map((i) => (
+            <mesh
+              key={i}
+              position={[0, -i * 0.12 - 0.36, -i * 0.4]}
+              castShadow
+              receiveShadow
+            >
+              <boxGeometry args={[1.6, 0.72, 0.4]} />
+              <meshToonMaterial
+                color={i % 2 ? p.colorA : p.colorB}
+                gradientMap={toonGradient}
+              />
+              <Ink />
+            </mesh>
+          ))}
+        </group>
+      )
+    case "bridge-deck": {
+      if (!p.aux) return null
+      const span = p.aux[0].distanceTo(p.aux[1]) + 0.04
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          <mesh castShadow receiveShadow>
+            <boxGeometry args={[span, 0.2, 1.8]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {/* darker kerb line under the deck edge */}
+          <mesh position={[0, -0.12, 0]}>
+            <boxGeometry args={[span, 0.06, 1.65]} />
+            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+          </mesh>
+        </group>
+      )
+    }
+    case "bridge-rail": {
+      if (!p.aux) return null
+      const span = p.aux[0].distanceTo(p.aux[1]) + 0.04
+      // guardrail proportions: two posts and a top rail, all too thin to ink
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          {[-span / 2 + 0.06, span / 2 - 0.06].map((x, i) => (
+            <mesh key={i} position={[x, 0.22, 0]} castShadow>
+              <cylinderGeometry args={[0.025, 0.025, 0.55, 6]} />
+              <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            </mesh>
+          ))}
+          <mesh position={[0, 0.42, 0]} castShadow>
+            <boxGeometry args={[span, 0.08, 0.05]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+          </mesh>
+          <mesh position={[0, 0.22, 0]}>
+            <boxGeometry args={[span, 0.05, 0.04]} />
+            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+          </mesh>
+        </group>
+      )
+    }
+    case "bridge-pier": {
+      if (!p.aux) return null
+      const height = p.aux[0].distanceTo(p.aux[1])
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          <mesh position={[0, height / 2 - 0.15, 0]} castShadow receiveShadow>
+            <cylinderGeometry args={[0.125, 0.16, height + 0.3, 8]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+        </group>
+      )
+    }
     case "metro-pillar": {
       if (!p.aux) return null
       const height = p.aux[0].distanceTo(p.aux[1])
       return (
         <group position={pos} quaternion={quat} scale={p.scale}>
-          {/* sunk 0.5 below grade like every other rooted structure */}
-          <mesh position={[0, height / 2 - 0.25, 0]} castShadow receiveShadow>
-            <cylinderGeometry args={[0.14, 0.2, height + 0.5, 8]} />
+          {/* flared footing, rooted below grade */}
+          <mesh position={[0, -0.05, 0]} castShadow receiveShadow>
+            <boxGeometry args={[0.7, 0.3, 0.7]} />
             <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
             <Ink />
           </mesh>
-          <mesh position={[0, height, 0]} castShadow>
-            <boxGeometry args={[0.7, 0.12, 0.3]} />
+          <mesh position={[0, height / 2 - 0.1, 0]} castShadow receiveShadow>
+            <cylinderGeometry args={[0.32, 0.42, height + 0.2, 10]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {/* cap beam sits just under the deck */}
+          <mesh position={[0, height - 0.09, 0]} castShadow>
+            <boxGeometry args={[1.1, 0.15, 0.5]} />
             <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+        </group>
+      )
+    }
+    case "metro-station": {
+      if (!p.aux) return null
+      const lift = p.aux[0].distanceTo(p.aux[1])
+      const deckY = lift
+      const platY = deckY - 0.25
+      const roofY = platY + 1.35
+      const tex = p.signText
+        ? makeSignTexture(
+            [
+              { text: p.signText.kannada, font: `54px ${KANNADA_FONT_STACK}`, color: "#ffffff" },
+              {
+                text: p.signText.english,
+                font: '38px "Segoe UI", system-ui, sans-serif',
+                color: "#e6f2e9",
+              },
+            ],
+            p.colorB,
+            "#ffffff",
+          )
+        : null
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          {/* legs carrying the platform down to the ground */}
+          {[-1.3, 1.3].map((x, i) => (
+            <mesh key={`l${i}`} position={[x, platY / 2 - 0.15, 0.85]} castShadow>
+              <boxGeometry args={[0.3, platY + 0.3, 0.3]} />
+              <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+              <Ink />
+            </mesh>
+          ))}
+          {/* platform slab, one step below the deck and set beside the track */}
+          <mesh position={[0, platY, 0.85]} castShadow receiveShadow>
+            <boxGeometry args={[3.5, 0.14, 0.9]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {/* canopy columns */}
+          {[
+            [-1.5, 0.55],
+            [1.5, 0.55],
+            [-1.5, 1.15],
+            [1.5, 1.15],
+          ].map(([x, z], i) => (
+            <mesh key={`c${i}`} position={[x, platY + 0.68, z]} castShadow>
+              <cylinderGeometry args={[0.06, 0.06, 1.3, 8]} />
+              <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            </mesh>
+          ))}
+          <mesh position={[0, roofY, 0.85]} castShadow>
+            <boxGeometry args={[3.6, 0.1, 1.15]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {/* name board on the outer face of the canopy */}
+          <mesh position={[0, roofY - 0.4, 1.45]} castShadow>
+            <boxGeometry args={[1.7, 0.55, 0.06]} />
+            {[0, 1, 2, 3].map((slot) => (
+              <meshToonMaterial
+                key={slot}
+                attach={`material-${slot}`}
+                color={p.colorB}
+                gradientMap={toonGradient}
+              />
+            ))}
+            {[4, 5].map((slot) => (
+              <meshToonMaterial
+                key={slot}
+                attach={`material-${slot}`}
+                color="#ffffff"
+                map={tex ?? undefined}
+                gradientMap={toonGradient}
+              />
+            ))}
             <Ink />
           </mesh>
         </group>
@@ -581,19 +848,28 @@ function PropInstance({ p }: { p: PlacedProp }) {
 /* ------------------------------------------------------------- namma metro */
 
 const COACHES = 3
-/** radians/sec — a full lap in about 39s */
-const TRAIN_SPEED = 0.16
 const COACH_GAP = 0.045
 const TRAIN_RIDE_HEIGHT = 0.28
 const METRO_PURPLE = "#7a3f9d"
+/** how far apart the two probes are when deriving the deck tangent */
+const TANGENT_EPS = 0.004
 
 // scratch, so the train costs no allocations per frame
-const _tDir = new THREE.Vector3()
-const _tTan = new THREE.Vector3()
+const _tAhead = new THREE.Vector3()
+const _tBehind = new THREE.Vector3()
+const _tPos = new THREE.Vector3()
+const _tFwd = new THREE.Vector3()
+const _tUp = new THREE.Vector3()
 const _tSide = new THREE.Vector3()
 const _tBasis = new THREE.Matrix4()
 
-function Coach({ lead }: { lead: boolean }) {
+function Coach({
+  headlightRef,
+  windowRef,
+}: {
+  headlightRef?: (m: THREE.Group | null) => void
+  windowRef: (m: THREE.MeshToonMaterial | null) => void
+}) {
   return (
     <>
       <mesh castShadow>
@@ -601,10 +877,10 @@ function Coach({ lead }: { lead: boolean }) {
         <meshToonMaterial color={METRO_PURPLE} gradientMap={toonGradient} />
         <Ink />
       </mesh>
-      {/* window band */}
+      {/* window band — dimmed while the doors are open */}
       <mesh position={[0, 0.05, 0]}>
         <boxGeometry args={[0.78, 0.12, 0.4]} />
-        <meshToonMaterial color="#232733" gradientMap={toonGradient} />
+        <meshToonMaterial ref={windowRef} color="#2f3646" gradientMap={toonGradient} />
       </mesh>
       {/* livery stripe */}
       <mesh position={[0, -0.09, 0]}>
@@ -618,8 +894,9 @@ function Coach({ lead }: { lead: boolean }) {
           <meshToonMaterial color={METRO_PURPLE} gradientMap={toonGradient} />
         </mesh>
       ))}
-      {lead &&
-        [-0.11, 0.11].map((z, i) => (
+      {/* headlamps live on a group that flips to whichever end leads */}
+      <group ref={headlightRef}>
+        {[-0.11, 0.11].map((z, i) => (
           <mesh key={i} position={[0.5, -0.06, z]}>
             <sphereGeometry args={[0.035, 8, 8]} />
             <meshToonMaterial
@@ -630,31 +907,49 @@ function Coach({ lead }: { lead: boolean }) {
             />
           </mesh>
         ))}
+      </group>
     </>
   )
 }
 
 /**
  * Lives here rather than in Scene.tsx because it is welded to the viaduct it
- * rides: same circle basis, same TRACK_RADIUS, same toon/outline setup as the
+ * rides: same corridor basis, same deck profile, same toon/outline setup as the
  * metro props a few cases above. Keeping them apart would let the deck and the
  * train drift out of alignment.
  */
-function MetroTrain() {
+function Train({ index }: { index: number }) {
   const coaches = useRef<(THREE.Group | null)[]>(new Array(COACHES).fill(null))
+  const lamps = useRef<(THREE.Group | null)[]>(new Array(COACHES).fill(null))
+  const windows = useRef<(THREE.MeshToonMaterial | null)[]>(new Array(COACHES).fill(null))
 
   useFrame(({ clock }) => {
-    const head = clock.getElapsedTime() * TRAIN_SPEED
+    const state = metroTrainState(clock.getElapsedTime(), index)
     for (let i = 0; i < COACHES; i++) {
       const g = coaches.current[i]
       if (!g) continue
-      const t = head - i * COACH_GAP
-      metroTangent(t, _tTan, _tDir) // fills _tDir with the point, _tTan the heading
-      g.position.copy(_tDir).multiplyScalar(TRACK_RADIUS + TRAIN_RIDE_HEIGHT)
-      // local +X runs along the track, +Y points away from the planet
-      _tSide.crossVectors(_tTan, _tDir).normalize()
-      _tBasis.makeBasis(_tTan, _tDir, _tSide)
+      // each coach is solved at its OWN curve parameter, so the set articulates
+      // through bends instead of moving as one rigid body
+      const t = state.t - i * COACH_GAP
+      deckPoint(t, _tPos)
+      deckPoint(t + TANGENT_EPS, _tAhead)
+      deckPoint(t - TANGENT_EPS, _tBehind)
+
+      _tUp.copy(_tPos).normalize()
+      g.position.copy(_tPos).addScaledVector(_tUp, TRAIN_RIDE_HEIGHT)
+
+      // heading taken from the deck itself, so coaches pitch with the grade
+      _tFwd.copy(_tAhead).sub(_tBehind).normalize()
+      _tUp.addScaledVector(_tFwd, -_tUp.dot(_tFwd)).normalize()
+      _tSide.crossVectors(_tFwd, _tUp)
+      _tBasis.makeBasis(_tFwd, _tUp, _tSide)
       g.quaternion.setFromRotationMatrix(_tBasis)
+
+      const lamp = lamps.current[i]
+      if (lamp) lamp.visible = i === 0
+
+      const win = windows.current[i]
+      if (win) win.emissiveIntensity = state.dwelling ? 0 : 0.35
     }
   })
 
@@ -667,10 +962,27 @@ function MetroTrain() {
             coaches.current[i] = g
           }}
         >
-          <Coach lead={i === 0} />
+          <Coach
+            headlightRef={(m) => {
+              lamps.current[i] = m
+            }}
+            windowRef={(m) => {
+              windows.current[i] = m
+            }}
+          />
         </group>
       ))}
     </group>
+  )
+}
+
+/** two trains sharing the loop, half a schedule apart */
+function MetroTrains() {
+  return (
+    <>
+      <Train index={0} />
+      <Train index={1} />
+    </>
   )
 }
 
@@ -681,7 +993,7 @@ export function PropsLayer() {
       {props.map((p, i) => (
         <PropInstance key={i} p={p} />
       ))}
-      <MetroTrain />
+      <MetroTrains />
     </group>
   )
 }

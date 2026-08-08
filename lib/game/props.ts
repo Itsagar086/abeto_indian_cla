@@ -24,6 +24,14 @@ export type PropKind =
   | "zone-signboard"
   | "metro-pillar"
   | "metro-track"
+  | "metro-station"
+  | "bridge-deck"
+  | "bridge-rail"
+  | "bridge-pier"
+  | "gopuram"
+  | "temple-court"
+  | "nandi-statue"
+  | "temple-steps"
 
 export type PlacedProp = {
   kind: PropKind
@@ -72,98 +80,571 @@ const KIND_COLORS: Partial<Record<PropKind, [string, string]>> = {
   "zone-signboard": ["#1e5a3a", "#ffffff"],
   "metro-pillar": ["#b8b2a6", "#9a948a"],
   "metro-track": ["#9a948a", "#7f7a71"],
+  "metro-station": ["#cfcabf", "#1e5a3a"],
+  "bridge-deck": ["#cfc8ba", "#a89e90"],
+  "bridge-rail": ["#f2f0e8", "#d8d5cb"],
+  "bridge-pier": ["#a89e90", "#8d8478"],
+  gopuram: ["#c9a876", "#b0453a"],
+  "nandi-statue": ["#4a4442", "#4a4442"],
+  "temple-court": ["#c9b48f", "#a89272"],
+  "temple-steps": ["#c9b48f", "#a89272"],
 }
 
 /* ------------------------------------------------------------- namma metro */
 
-/**
- * The metro rides the full great circle through KR Market and Binny Mills, so
- * it laps the planet rather than shuttling. Everything — pillars, guideway and
- * train — is parameterised off this one circle.
- */
-const METRO_START = new THREE.Vector3(
-  ...(ZONES.find((z) => z.id === "bazaar")?.center ?? [1, 0, 0]),
-).normalize()
-export const METRO_AXIS = new THREE.Vector3()
-  .crossVectors(
-    METRO_START,
-    new THREE.Vector3(...(ZONES.find((z) => z.id === "mill")?.center ?? [0, 1, 0])).normalize(),
-  )
-  .normalize()
+const ZONE_DIRS = ZONES.map((z) => new THREE.Vector3(...z.center).normalize())
 
-/** unit direction on the metro circle at parameter t, written into `target` */
-export function metroDir(t: number, target: THREE.Vector3) {
-  return target.copy(METRO_START).applyAxisAngle(METRO_AXIS, t)
-}
+/** closed tour of all nine zones: nearest neighbour from KR Market, then 2-opt */
+function planLoop(): number[] {
+  const n = ZONE_DIRS.length
+  const dist = (a: number, b: number) => ZONE_DIRS[a].angleTo(ZONE_DIRS[b])
+  const start = Math.max(0, ZONES.findIndex((z) => z.id === "bazaar"))
 
-/** direction of travel at t. d/dt of a rotation about an axis is axis x dir. */
-export function metroTangent(t: number, target: THREE.Vector3, dir: THREE.Vector3) {
-  metroDir(t, dir)
-  return target.crossVectors(METRO_AXIS, dir).normalize()
-}
-
-const METRO_CLEARANCE = 2.2
-const METRO_STATIONS = Math.round((Math.PI * 2) / 0.09)
-const METRO_STEP = (Math.PI * 2) / METRO_STATIONS
-
-/** highest ground anywhere under the line, so the deck clears all of it */
-export const TRACK_RADIUS = (() => {
-  const probe = new THREE.Vector3()
-  let peak = 0
-  for (let i = 0; i < 720; i++) {
-    peak = Math.max(peak, terrainRadius(metroDir((i / 720) * Math.PI * 2, probe)))
+  const tour = [start]
+  const left = new Set<number>()
+  for (let i = 0; i < n; i++) if (i !== start) left.add(i)
+  while (left.size) {
+    const last = tour[tour.length - 1]
+    let best = -1
+    let bestD = Infinity
+    for (const c of left) {
+      const d = dist(last, c)
+      if (d < bestD) {
+        bestD = d
+        best = c
+      }
+    }
+    tour.push(best)
+    left.delete(best)
   }
-  return Math.ceil(peak + METRO_CLEARANCE)
+
+  const length = (t: number[]) => {
+    let s = 0
+    for (let i = 0; i < n; i++) s += dist(t[i], t[(i + 1) % n])
+    return s
+  }
+  for (let pass = 0; pass < 40; pass++) {
+    let improved = false
+    for (let i = 1; i < n - 1 && !improved; i++) {
+      for (let k = i + 1; k < n && !improved; k++) {
+        const cand = tour
+          .slice(0, i)
+          .concat(tour.slice(i, k + 1).reverse(), tour.slice(k + 1))
+        if (length(cand) < length(tour) - 1e-9) {
+          tour.splice(0, n, ...cand)
+          improved = true
+        }
+      }
+    }
+    if (!improved) break
+  }
+  return tour
+}
+
+const METRO_ORDER = planLoop()
+export const METRO_ZONE_IDS = METRO_ORDER.map((i) => ZONES[i].id)
+export const METRO_TOUR_LENGTH = (() => {
+  let s = 0
+  for (let i = 0; i < METRO_ORDER.length; i++) {
+    s += ZONE_DIRS[METRO_ORDER[i]].angleTo(ZONE_DIRS[METRO_ORDER[(i + 1) % METRO_ORDER.length]])
+  }
+  return s
 })()
 
-/** viaduct pillars and deck segments around the whole circle */
-function placeMetro(props: PlacedProp[]) {
-  const [pillarA, pillarB] = KIND_COLORS["metro-pillar"] ?? ["#b8b2a6", "#9a948a"]
-  const [trackA, trackB] = KIND_COLORS["metro-track"] ?? ["#9a948a", "#7f7a71"]
-  const dir = new THREE.Vector3()
-  const nextDir = new THREE.Vector3()
-  let seed = 1500
+/* ------------------------------------------------------------ deck profile */
 
-  for (let i = 0; i < METRO_STATIONS; i++) {
-    const t = i * METRO_STEP
-    metroDir(t, dir)
+const DECK_SAMPLE = 0.02
+const DECK_SMOOTH = 7
+const DECK_RISE = 5
+const DECK_MIN_CLEAR = 4
+const DECK_WATER = WATER_LEVEL + 3
+/** generous on purpose: a tight limit ratchets the deck up over rough ground */
+const DECK_MAX_STEP = 0.25
 
-    // pillar, unless its footing would be in the water — the deck simply
-    // spans those gaps
-    const ground = terrainRadius(dir)
-    if (ground >= WATER_LEVEL + 0.3) {
-      const base = dir.clone().multiplyScalar(ground)
-      const top = dir.clone().multiplyScalar(TRACK_RADIUS)
-      const tangent = new THREE.Vector3().crossVectors(METRO_AXIS, dir).normalize()
-      props.push({
-        kind: "metro-pillar",
-        position: base,
-        quaternion: surfaceQuaternion(dir, spinAlong(dir, tangent)),
-        scale: 1,
-        colorA: pillarA,
-        colorB: pillarB,
-        seed: seed++,
-        aux: [base, top],
-      })
+const PILLAR_STEP = 0.075
+
+/* ---------------------------------------------------------- station siting */
+
+const STATION_LEAD = 0.3
+const SLIDE_STEP = 0.02
+const SLIDE_MAX = 0.2
+/** required world clearance from big props (scale >= 1) and from small ones */
+const CLEAR_BIG = 3.5
+const CLEAR_SMALL = 1.2
+
+export type StationInfo = {
+  zone: string
+  offset: number
+  clearance: number
+  t: number
+  /** which siting pass succeeded: 1 = all constraints, 2 = ribbon relaxed */
+  pass: number
+}
+
+type MetroNet = {
+  dirs: Float64Array
+  deck: Float64Array
+  raw: Float64Array
+  n: number
+  step: number
+  total: number
+  stations: StationInfo[]
+  legs: Leg[]
+  cycle: number
+}
+
+type Leg = {
+  start: number
+  dwellEnd: number
+  end: number
+  startT: number
+  dist: number
+  rampTime: number
+  cruiseTime: number
+  rampDist: number
+}
+
+let NET: MetroNet | null = null
+
+/**
+ * Buildings and trees need real room; street furniture only needs not to be
+ * inside the pier. Classified by kind rather than by `scale`, because every
+ * guardrail, pole and grass tuft is pushed with scale 1 — a literal
+ * scale-based rule would demand 3.5u from every tuft and no site would exist.
+ */
+const BULKY_KINDS = new Set<PropKind>([
+  "stall",
+  "market-umbrella",
+  "haveli-arch",
+  "palace",
+  "mill-block",
+  "workshop-shed",
+  "temple-dome",
+  "ghat-steps",
+  "mango-tree",
+  "banyan",
+  "peepal-tree",
+  "zone-signboard",
+])
+
+/** smallest distance from `pos` to any already-placed prop, and whether it clears */
+function propClearance(pos: THREE.Vector3, placed: PlacedProp[]) {
+  let nearest = Infinity
+  let ok = true
+  for (const p of placed) {
+    if (p.kind === "wire") continue // no footprint, floats in the air
+    const d = pos.distanceTo(p.position)
+    if (d < nearest) nearest = d
+    if (d < (BULKY_KINDS.has(p.kind) ? CLEAR_BIG : CLEAR_SMALL)) ok = false
+  }
+  return { ok, nearest }
+}
+
+/** rotate `from` toward `toward` by `angle` radians along their great circle */
+function advance(from: THREE.Vector3, toward: THREE.Vector3, angle: number) {
+  const tan = arcTangent(from, toward)
+  if (!tan) return from.clone()
+  return from.clone().multiplyScalar(Math.cos(angle)).addScaledVector(tan, Math.sin(angle)).normalize()
+}
+
+/**
+ * A station sits STATION_LEAD out from its zone centre along the loop. If that
+ * lands on a building, a road ribbon or in the water it slides along the loop
+ * until it is clear.
+ */
+function siteStations(placed: PlacedProp[]) {
+  const sites: { dir: THREE.Vector3; info: StationInfo }[] = []
+  const n = METRO_ORDER.length
+
+  for (let i = 0; i < n; i++) {
+    const zi = METRO_ORDER[i]
+    const zoneDir = ZONE_DIRS[zi]
+    const nextDir = ZONE_DIRS[METRO_ORDER[(i + 1) % n]]
+    // never lead more than 40% of the way to the next zone: on the short
+    // beach->temple leg a flat 0.3 rad would land in the temple's own props
+    const legLength = zoneDir.angleTo(nextDir)
+    const lead = Math.min(STATION_LEAD, 0.4 * legLength)
+
+    const offsets: number[] = [0]
+    for (let s = SLIDE_STEP; s <= SLIDE_MAX + 1e-9; s += SLIDE_STEP) {
+      offsets.push(s, -s)
     }
 
-    // deck segment to the next station, placed whether or not a pillar stood
-    metroDir(t + METRO_STEP, nextDir)
-    const endA = dir.clone().multiplyScalar(TRACK_RADIUS)
-    const endB = nextDir.clone().multiplyScalar(TRACK_RADIUS)
-    const midDir = endA.clone().add(endB).normalize()
-    const midTangent = new THREE.Vector3().crossVectors(METRO_AXIS, midDir).normalize()
+    /**
+     * Three passes, loosening one constraint at a time. The metro parallels the
+     * road network by construction — both connect the same nine zones — so on
+     * some legs no site within the slide range is off every ribbon. An elevated
+     * station straddling a road is realistic, so that is the constraint that
+     * gives way first; prop clearance and dry land never do.
+     */
+    let chosen: THREE.Vector3 | null = null
+    let chosenOffset = 0
+    let chosenClear = 0
+    let chosenPass = 0
+    let best: { dir: THREE.Vector3; off: number; clear: number } | null = null
+
+    for (let pass = 1; pass <= 3 && !chosen; pass++) {
+      for (const off of offsets) {
+        const dir = advance(zoneDir, nextDir, lead + off)
+        const ground = terrainRadius(dir)
+        if (ground < WATER_LEVEL + 0.3) continue
+        if (pass === 1 && roadDistance(dir) < RIBBON_CLEAR) continue
+        const pos = dir.clone().multiplyScalar(ground)
+        const { ok, nearest } = propClearance(pos, placed)
+        if (!best || nearest > best.clear) best = { dir, off, clear: nearest }
+        if (ok) {
+          chosen = dir
+          chosenOffset = off
+          chosenClear = nearest
+          chosenPass = pass
+          break
+        }
+      }
+    }
+
+    if (!chosen && best) {
+      chosen = best.dir
+      chosenOffset = best.off
+      chosenClear = best.clear
+      chosenPass = 4
+    }
+    if (!chosen) {
+      chosen = advance(zoneDir, nextDir, lead)
+      chosenPass = 5
+    }
+
+    sites.push({
+      dir: chosen,
+      info: {
+        zone: ZONES[zi].id,
+        offset: chosenOffset,
+        clearance: chosenClear,
+        t: 0,
+        pass: chosenPass,
+      },
+    })
+  }
+  return sites
+}
+
+/* ------------------------------------------------------------- loop + deck */
+
+function buildNetwork(placed: PlacedProp[]): MetroNet {
+  const sites = siteStations(placed)
+  const controls = sites.map((s) => s.dir)
+
+  // closed spline through the station directions, resampled to even arc steps
+  const curve = new THREE.CatmullRomCurve3(
+    controls.map((d) => d.clone()),
+    true,
+    "centripetal",
+  )
+  const M = 4000
+  const pts: THREE.Vector3[] = []
+  for (let i = 0; i < M; i++) pts.push(curve.getPoint(i / M).normalize())
+  const cum = new Float64Array(M + 1)
+  for (let i = 0; i < M; i++) cum[i + 1] = cum[i] + pts[i].angleTo(pts[(i + 1) % M])
+  const total = cum[M]
+
+  const n = Math.max(16, Math.round(total / DECK_SAMPLE))
+  const step = total / n
+  const dirs = new Float64Array(n * 3)
+  {
+    let seg = 0
+    const v = new THREE.Vector3()
+    for (let i = 0; i < n; i++) {
+      const target = i * step
+      while (seg < M - 1 && cum[seg + 1] < target) seg++
+      const span = cum[seg + 1] - cum[seg]
+      const f = span > 1e-12 ? (target - cum[seg]) / span : 0
+      v.copy(pts[seg]).lerp(pts[(seg + 1) % M], f).normalize()
+      dirs[i * 3] = v.x
+      dirs[i * 3 + 1] = v.y
+      dirs[i * 3 + 2] = v.z
+    }
+  }
+
+  // ground profile -> smoothed -> lifted -> slope limited (raising only)
+  const raw = new Float64Array(n)
+  const probe = new THREE.Vector3()
+  for (let i = 0; i < n; i++) {
+    probe.set(dirs[i * 3], dirs[i * 3 + 1], dirs[i * 3 + 2])
+    raw[i] = terrainRadius(probe)
+  }
+  const base = new Float64Array(n)
+  for (let i = 0; i < n; i++) base[i] = Math.max(raw[i], WATER_LEVEL)
+  const smooth = new Float64Array(n)
+  for (let i = 0; i < n; i++) {
+    let sum = 0
+    for (let k = -DECK_SMOOTH; k <= DECK_SMOOTH; k++) {
+      sum += base[(((i + k) % n) + n) % n] // the loop is closed, so wrap
+    }
+    smooth[i] = sum / (DECK_SMOOTH * 2 + 1)
+  }
+  const deck = new Float64Array(n)
+  for (let i = 0; i < n; i++) {
+    deck[i] = Math.max(smooth[i] + DECK_RISE, raw[i] + DECK_MIN_CLEAR, DECK_WATER)
+  }
+  // two wrapped passes each way so the closed loop meets itself smoothly
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < n; i++) {
+      const p = (i - 1 + n) % n
+      deck[i] = Math.max(deck[i], deck[p] - DECK_MAX_STEP)
+    }
+    for (let i = n - 1; i >= 0; i--) {
+      const q = (i + 1) % n
+      deck[i] = Math.max(deck[i], deck[q] - DECK_MAX_STEP)
+    }
+  }
+
+  // arc position of each station: the spline passes through control k at u=k/K
+  const K = controls.length
+  const stations = sites.map((s, k) => {
+    const j = Math.min(M, Math.round((k / K) * M))
+    return { ...s.info, t: cum[j] }
+  })
+
+  const legs = buildSchedule(stations, total)
+  const cycle = legs.length ? legs[legs.length - 1].end : 1
+
+  return { dirs, deck, raw, n, step, total, stations, legs, cycle }
+}
+
+/* ---------------------------------------------------------------- schedule */
+
+const TRAIN_DWELL = 3.5
+const TRAIN_RAMP = 2.2
+const TRAIN_CRUISE = 0.14
+
+function buildSchedule(stations: StationInfo[], total: number): Leg[] {
+  const legs: Leg[] = []
+  const k = stations.length
+  let clock = 0
+  for (let i = 0; i < k; i++) {
+    const startT = stations[i].t
+    const dist = (((stations[(i + 1) % k].t - startT) % total) + total) % total
+    let rampTime = TRAIN_RAMP
+    let rampDist = (TRAIN_CRUISE * TRAIN_RAMP) / 2
+    let cruiseTime = 0
+    if (dist >= rampDist * 2) {
+      cruiseTime = (dist - rampDist * 2) / TRAIN_CRUISE
+    } else {
+      // too short to reach cruise: shrink both ramps so they exactly cover it
+      rampTime = dist / TRAIN_CRUISE
+      rampDist = dist / 2
+    }
+    const start = clock
+    const dwellEnd = start + TRAIN_DWELL
+    const end = dwellEnd + rampTime * 2 + cruiseTime
+    legs.push({ start, dwellEnd, end, startT, dist, rampTime, cruiseTime, rampDist })
+    clock = end
+  }
+  return legs
+}
+
+/** distance covered `e` seconds into a leg's run — velocity-continuous */
+function legDistance(leg: Leg, e: number) {
+  if (e <= leg.rampTime) {
+    const x = leg.rampTime > 0 ? e / leg.rampTime : 1
+    return TRAIN_CRUISE * leg.rampTime * (x * x * x - (x * x * x * x) / 2)
+  }
+  if (e <= leg.rampTime + leg.cruiseTime) {
+    return leg.rampDist + TRAIN_CRUISE * (e - leg.rampTime)
+  }
+  const y = leg.rampTime > 0 ? Math.min(1, (e - leg.rampTime - leg.cruiseTime) / leg.rampTime) : 1
+  return (
+    leg.rampDist +
+    leg.cruiseTime * TRAIN_CRUISE +
+    TRAIN_CRUISE * leg.rampTime * (y - y * y * y + (y * y * y * y) / 2)
+  )
+}
+
+/* ------------------------------------------------------------ public reads */
+
+export function metroReady() {
+  return NET !== null
+}
+
+export function metroStats() {
+  if (!NET) return null
+  let minLand = Infinity
+  let maxLand = -Infinity
+  let minAll = Infinity
+  let maxAll = -Infinity
+  for (let i = 0; i < NET.n; i++) {
+    const h = NET.deck[i] - NET.raw[i]
+    minAll = Math.min(minAll, h)
+    maxAll = Math.max(maxAll, h)
+    if (NET.raw[i] >= WATER_LEVEL) {
+      minLand = Math.min(minLand, h)
+      maxLand = Math.max(maxLand, h)
+    }
+  }
+  return {
+    total: NET.total,
+    samples: NET.n,
+    stations: NET.stations,
+    cycle: NET.cycle,
+    minLand,
+    maxLand,
+    minAll,
+    maxAll,
+  }
+}
+
+/** unit direction on the loop at arc parameter t */
+export function loopDir(t: number, target: THREE.Vector3) {
+  if (!NET) return target.set(0, 1, 0)
+  const { dirs, n, step } = NET
+  let x = t / step
+  x = ((x % n) + n) % n
+  const i = Math.floor(x)
+  const f = x - i
+  const j = (i + 1) % n
+  target.set(
+    dirs[i * 3] + (dirs[j * 3] - dirs[i * 3]) * f,
+    dirs[i * 3 + 1] + (dirs[j * 3 + 1] - dirs[i * 3 + 1]) * f,
+    dirs[i * 3 + 2] + (dirs[j * 3 + 2] - dirs[i * 3 + 2]) * f,
+  )
+  return target.normalize()
+}
+
+/** deck radius at arc parameter t */
+export function deckRadius(t: number) {
+  if (!NET) return WATER_LEVEL + 3
+  const { deck, n, step } = NET
+  let x = t / step
+  x = ((x % n) + n) % n
+  const i = Math.floor(x)
+  const f = x - i
+  const j = (i + 1) % n
+  return deck[i] + (deck[j] - deck[i]) * f
+}
+
+/** world-space point on the deck at t */
+export function deckPoint(t: number, target: THREE.Vector3) {
+  return loopDir(t, target).multiplyScalar(deckRadius(t))
+}
+
+const _trainStates = [
+  { t: 0, dwelling: false },
+  { t: 0, dwelling: false },
+]
+
+/** where train `index` is at `time`; the second train runs half a cycle ahead */
+export function metroTrainState(time: number, index: number) {
+  const out = _trainStates[index] ?? _trainStates[0]
+  if (!NET || !NET.legs.length) {
+    out.t = 0
+    out.dwelling = true
+    return out
+  }
+  const cycle = NET.cycle
+  const shifted = time + (index * cycle) / 2
+  const p = ((shifted % cycle) + cycle) % cycle
+  for (let i = 0; i < NET.legs.length; i++) {
+    const leg = NET.legs[i]
+    if (p >= leg.end) continue
+    if (p < leg.dwellEnd) {
+      out.t = leg.startT
+      out.dwelling = true
+    } else {
+      out.t = leg.startT + legDistance(leg, p - leg.dwellEnd)
+      out.dwelling = false
+    }
+    return out
+  }
+  const last = NET.legs[NET.legs.length - 1]
+  out.t = last.startT + last.dist
+  out.dwelling = false
+  return out
+}
+
+/* ---------------------------------------------------------------- placement */
+
+/** frame whose +X follows the deck and whose +Y leans away from the planet */
+function deckQuaternion(along: THREE.Vector3, radial: THREE.Vector3) {
+  const x = along.clone().normalize()
+  const y = radial.clone().addScaledVector(x, -radial.dot(x)).normalize()
+  const z = new THREE.Vector3().crossVectors(x, y)
+  return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z))
+}
+
+/** the whole viaduct: pillars, deck segments and nine stations */
+function placeMetro(props: PlacedProp[]) {
+  NET = buildNetwork(props)
+  const net = NET
+
+  const [pillarA, pillarB] = KIND_COLORS["metro-pillar"] ?? ["#b8b2a6", "#9a948a"]
+  const [trackA, trackB] = KIND_COLORS["metro-track"] ?? ["#9a948a", "#7f7a71"]
+  const [stationA, stationB] = KIND_COLORS["metro-station"] ?? ["#cfcabf", "#1e5a3a"]
+
+  const dir = new THREE.Vector3()
+  let seed = 1500
+
+  const steps = Math.max(8, Math.round(net.total / PILLAR_STEP))
+  const step = net.total / steps
+  for (let i = 0; i < steps; i++) {
+    const t = i * step
+    loopDir(t, dir)
+    const ground = terrainRadius(dir)
+    if (ground < WATER_LEVEL + 0.3) continue
+    const base = dir.clone().multiplyScalar(ground)
+    const top = dir.clone().multiplyScalar(deckRadius(t))
+    const ahead = new THREE.Vector3()
+    loopDir(t + 0.01, ahead)
+    const tangent = ahead.sub(dir).normalize()
+    props.push({
+      kind: "metro-pillar",
+      position: base,
+      quaternion: surfaceQuaternion(dir, spinAlong(dir, tangent)),
+      scale: 1,
+      colorA: pillarA,
+      colorB: pillarB,
+      seed: seed++,
+      aux: [base, top],
+    })
+  }
+
+  // deck: one segment per pillar step, wrapping closed
+  for (let i = 0; i < steps; i++) {
+    const t = i * step
+    const endA = new THREE.Vector3()
+    const endB = new THREE.Vector3()
+    deckPoint(t, endA)
+    deckPoint(t + step, endB)
+    const mid = endA.clone().add(endB).multiplyScalar(0.5)
     props.push({
       kind: "metro-track",
-      position: midDir.clone().multiplyScalar(TRACK_RADIUS),
-      quaternion: surfaceQuaternion(midDir, spinAlong(midDir, midTangent)),
+      position: mid,
+      quaternion: deckQuaternion(endB.clone().sub(endA), mid.clone().normalize()),
       scale: 1,
       colorA: trackA,
       colorB: trackB,
       seed: seed++,
-      aux: [endA, endB],
+      aux: [endA.clone(), endB.clone()],
     })
   }
+
+  net.stations.forEach((st, i) => {
+    loopDir(st.t, dir)
+    const ground = dir.clone().multiplyScalar(terrainRadius(dir))
+    const deck = dir.clone().multiplyScalar(deckRadius(st.t))
+    const ahead = new THREE.Vector3()
+    loopDir(st.t + 0.01, ahead)
+    const tangent = ahead.sub(dir).normalize()
+    props.push({
+      kind: "metro-station",
+      position: ground,
+      quaternion: surfaceQuaternion(dir, spinAlong(dir, tangent)),
+      scale: 1,
+      colorA: stationA,
+      colorB: stationB,
+      seed: 1600 + i,
+      aux: [ground, deck],
+      signText: ZONE_SIGNS[st.zone],
+    })
+  })
 }
 
 function paletteFor(zoneId: string, r: () => number): [string, string] {
@@ -258,6 +739,233 @@ function arcTangent(dir: THREE.Vector3, toward: THREE.Vector3) {
   return t.lengthSq() < 1e-10 ? null : t.normalize()
 }
 
+/**
+ * Re-aim the prop just pushed so a chosen local axis points at its zone centre.
+ * add() always spins by `ang + PI`, which is fine for scatter but useless when
+ * a piece has a front — Nandi must look at the shrine, stairs must run downhill.
+ */
+function aimAtZone(props: PlacedProp[], zoneId: string, axis: "x" | "z") {
+  const prop = props[props.length - 1]
+  const zone = ZONES.find((z) => z.id === zoneId)
+  if (!prop || !zone) return
+  const centre = new THREE.Vector3(...zone.center).normalize()
+  const dir = prop.position.clone().normalize()
+  const toward = arcTangent(dir, centre)
+  if (!toward) return
+  if (axis === "x") {
+    // local +X onto the inward tangent
+    prop.quaternion.copy(surfaceQuaternion(dir, spinAlong(dir, toward)))
+  } else {
+    // putting +X on the perpendicular leaves +Z on the inward tangent
+    const perp = new THREE.Vector3().crossVectors(dir, toward).normalize()
+    prop.quaternion.copy(surfaceQuaternion(dir, spinAlong(dir, perp)))
+  }
+}
+
+/* ----------------------------------------------------------- road bridges */
+
+const WET_MARK = WATER_LEVEL + 0.25
+const BRIDGE_SAMPLE = 0.02
+const MIN_SPAN = 0.03
+/** ramp length at each bank, in radians */
+const BRIDGE_RAMP = 0.04
+const BRIDGE_DECK_R = WATER_LEVEL + 0.6
+const BRIDGE_HALF_WIDTH = 0.9
+/** roughly one pier per this many world units of wet span */
+const PIER_SPACING = 1.5
+
+export type BridgeSpan = {
+  road: number
+  /** wet section */
+  t0: number
+  t1: number
+  /** including the dry approach ramps */
+  tA: number
+  tB: number
+  arc: number
+  worldLength: number
+  piers: number
+}
+
+/** point on a road arc at angle `t` from `a`, toward `b` */
+function arcPoint(
+  a: THREE.Vector3,
+  b: THREE.Vector3,
+  omega: number,
+  t: number,
+  target: THREE.Vector3,
+) {
+  const s = Math.sin(omega)
+  return target
+    .copy(a)
+    .multiplyScalar(Math.sin(omega - t) / s)
+    .addScaledVector(b, Math.sin(t) / s)
+    .normalize()
+}
+
+/** every stretch of every road that runs below the waterline */
+const BRIDGE_SPANS: BridgeSpan[] = (() => {
+  const byId = new Map(ZONES.map((z) => [z.id, z]))
+  const spans: BridgeSpan[] = []
+  const dir = new THREE.Vector3()
+
+  ROAD_PAIRS.forEach(([idA, idB], road) => {
+    const za = byId.get(idA)
+    const zb = byId.get(idB)
+    if (!za || !zb) return
+    const a = new THREE.Vector3(...za.center).normalize()
+    const b = new THREE.Vector3(...zb.center).normalize()
+    const omega = a.angleTo(b)
+    if (omega < MIN_SPAN) return
+
+    let runStart: number | null = null
+    const steps = Math.ceil(omega / BRIDGE_SAMPLE)
+    for (let i = 0; i <= steps; i++) {
+      const t = Math.min(i * BRIDGE_SAMPLE, omega)
+      const wet = terrainRadius(arcPoint(a, b, omega, t, dir)) < WET_MARK
+      if (wet && runStart === null) runStart = t
+      if ((!wet || i === steps) && runStart !== null) {
+        const end = wet ? t : t - BRIDGE_SAMPLE
+        const arc = end - runStart
+        if (arc >= MIN_SPAN) {
+          const tA = Math.max(0, runStart - BRIDGE_RAMP)
+          const tB = Math.min(omega, end + BRIDGE_RAMP)
+          const worldLength = arc * BRIDGE_DECK_R
+          spans.push({
+            road,
+            t0: runStart,
+            t1: end,
+            tA,
+            tB,
+            arc,
+            worldLength,
+            piers: Math.max(1, Math.round(worldLength / PIER_SPACING)),
+          })
+        }
+        runStart = null
+      }
+    }
+  })
+  return spans
+})()
+
+export function bridgeReport() {
+  return BRIDGE_SPANS.map((s) => ({
+    road: `${ROAD_PAIRS[s.road][0]}-${ROAD_PAIRS[s.road][1]}`,
+    arc: s.arc,
+    worldLength: s.worldLength,
+    piers: s.piers,
+  }))
+}
+
+/** is this point on a road covered by a bridge, ramps included? */
+function onBridge(road: number, angle: number) {
+  for (const s of BRIDGE_SPANS) {
+    if (s.road === road && angle >= s.tA && angle <= s.tB) return true
+  }
+  return false
+}
+
+/** deck height at `t` within a span: flat over water, ramping down at the banks */
+function bridgeHeight(span: BridgeSpan, t: number, bankA: number, bankB: number) {
+  if (t <= span.t0) {
+    const f = span.t0 > span.tA ? (t - span.tA) / (span.t0 - span.tA) : 1
+    return bankA + (BRIDGE_DECK_R - bankA) * f
+  }
+  if (t >= span.t1) {
+    const f = span.tB > span.t1 ? (t - span.t1) / (span.tB - span.t1) : 1
+    return BRIDGE_DECK_R + (bankB - BRIDGE_DECK_R) * f
+  }
+  return BRIDGE_DECK_R
+}
+
+/** decks, railings and piers for every water crossing */
+function placeBridges(props: PlacedProp[]) {
+  const byId = new Map(ZONES.map((z) => [z.id, z]))
+  const [deckA, deckB] = KIND_COLORS["bridge-deck"] ?? ["#cfc8ba", "#a89e90"]
+  const [railA, railB] = KIND_COLORS["bridge-rail"] ?? ["#f2f0e8", "#d8d5cb"]
+  const [pierA, pierB] = KIND_COLORS["bridge-pier"] ?? ["#a89e90", "#8d8478"]
+  let seed = 1800
+
+  for (const span of BRIDGE_SPANS) {
+    const [idA, idB] = ROAD_PAIRS[span.road]
+    const za = byId.get(idA)
+    const zb = byId.get(idB)
+    if (!za || !zb) continue
+    const a = new THREE.Vector3(...za.center).normalize()
+    const b = new THREE.Vector3(...zb.center).normalize()
+    const omega = a.angleTo(b)
+
+    const probe = new THREE.Vector3()
+    const bankA = terrainRadius(arcPoint(a, b, omega, span.tA, probe))
+    const bankB = terrainRadius(arcPoint(a, b, omega, span.tB, probe))
+
+    const dirAt = (t: number, target: THREE.Vector3) => arcPoint(a, b, omega, t, target)
+    const pointAt = (t: number, target: THREE.Vector3) =>
+      dirAt(t, target).multiplyScalar(bridgeHeight(span, t, bankA, bankB))
+
+    const steps = Math.max(2, Math.ceil((span.tB - span.tA) / BRIDGE_SAMPLE))
+    const step = (span.tB - span.tA) / steps
+
+    for (let i = 0; i < steps; i++) {
+      const t = span.tA + i * step
+      const p0 = pointAt(t, new THREE.Vector3())
+      const p1 = pointAt(t + step, new THREE.Vector3())
+      const mid = p0.clone().add(p1).multiplyScalar(0.5)
+      const along = p1.clone().sub(p0)
+      const quat = deckQuaternion(along, mid.clone().normalize())
+
+      props.push({
+        kind: "bridge-deck",
+        position: mid,
+        quaternion: quat,
+        scale: 1,
+        colorA: deckA,
+        colorB: deckB,
+        seed: seed++,
+        aux: [p0.clone(), p1.clone()],
+      })
+
+      // a railing down each edge, offset across the deck
+      const side = new THREE.Vector3(0, 0, 1).applyQuaternion(quat).normalize()
+      for (const s of [-1, 1]) {
+        const r0 = p0.clone().addScaledVector(side, s * BRIDGE_HALF_WIDTH)
+        const r1 = p1.clone().addScaledVector(side, s * BRIDGE_HALF_WIDTH)
+        const rMid = r0.clone().add(r1).multiplyScalar(0.5)
+        props.push({
+          kind: "bridge-rail",
+          position: rMid,
+          quaternion: deckQuaternion(r1.clone().sub(r0), rMid.clone().normalize()),
+          scale: 1,
+          colorA: railA,
+          colorB: railB,
+          seed: seed++,
+          aux: [r0, r1],
+        })
+      }
+    }
+
+    // piers standing on the lakebed, spaced across the wet part only
+    for (let k = 0; k < span.piers; k++) {
+      const f = (k + 0.5) / span.piers
+      const t = span.t0 + (span.t1 - span.t0) * f
+      const d = dirAt(t, new THREE.Vector3())
+      const bed = d.clone().multiplyScalar(terrainRadius(d))
+      const top = d.clone().multiplyScalar(bridgeHeight(span, t, bankA, bankB))
+      props.push({
+        kind: "bridge-pier",
+        position: bed,
+        quaternion: surfaceQuaternion(d, 0),
+        scale: 1,
+        colorA: pierA,
+        colorB: pierB,
+        seed: seed++,
+        aux: [bed, top],
+      })
+    }
+  }
+}
+
 /** rails, poles and verge tufts walked along every road arc */
 function placeRoadFurniture(props: PlacedProp[]) {
   const byId = new Map(ZONES.map((z) => [z.id, z]))
@@ -305,6 +1013,9 @@ function placeRoadFurniture(props: PlacedProp[]) {
     // interior steps only — the endpoints are the zone centres themselves
     for (let i = 1; i < steps; i++) {
       const t = i / steps
+      // a bridge carries the road here — its own railings take over, and loose
+      // furniture would be left standing in open water
+      if (onBridge(roadIndex, t * omega)) continue
       const dir = a
         .clone()
         .multiplyScalar(Math.sin((1 - t) * omega) / sinO)
@@ -547,11 +1258,25 @@ export function buildProps(): PlacedProp[] {
   add("workshop-shed", "workshop", 0, 0.6, 1.2, 500)
   add("lamp-post", "workshop", 1.4, 1.2, 1, 501)
 
-  // --- temple: dome + flags on the summit
-  add("temple-dome", "temple", 0, 0.3, 1.8, 600)
-  // pushed clear of the dome's ~2.7u footprint
-  add("flag", "temple", 0.9, 2.0, 1.3, 601)
-  add("flag", "temple", -0.9, 2.0, 1.3, 602)
+  // --- temple: a South Indian hill shrine — gopuram at the summit, courtyard
+  // and Nandi on the approach, stair runs descending the slope below
+  add("gopuram", "temple", 0, 0.25, 1.6, 600)
+  aimAtZone(props, "temple", "z") // doorway (local -Z) looks down the approach
+  add("temple-court", "temple", 0, 0.55, 1.4, 601)
+  aimAtZone(props, "temple", "z") // mandapa roof (+Z half) sits toward the shrine
+  add("nandi-statue", "temple", 0, 0.85, 1.1, 602)
+  aimAtZone(props, "temple", "x") // the bull faces the shrine along local +X
+  add("temple-steps", "temple", 0, 1.25, 1.3, 603)
+  aimAtZone(props, "temple", "z") // treads descend along local -Z, downhill
+  // a run is 3.12u long and one distFrac unit here is 1.55u, so the second run
+  // starts ~2.0 distFrac beyond the first rather than inside it
+  add("temple-steps", "temple", 0, 3.3, 1.3, 604)
+  aimAtZone(props, "temple", "z")
+  // distFrac 1.3 clears the gopuram's 1.28u half-width, but the approach axis
+  // is fully occupied (court 0.85, Nandi 1.32, steps 1.94), so the flags are
+  // swung out to +-0.9 to stand off the axis instead of between the pieces
+  add("flag", "temple", 0.9, 1.3, 1.3, 605)
+  add("flag", "temple", -0.9, 1.3, 1.3, 606)
 
   // --- ghat: stepped stone terraces down to the water
   for (let i = 0; i < 6; i++) {
@@ -576,6 +1301,7 @@ export function buildProps(): PlacedProp[] {
   }
 
   placeRoadFurniture(props)
+  placeBridges(props)
   placeMetro(props)
 
   return props
