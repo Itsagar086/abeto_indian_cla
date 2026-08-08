@@ -354,6 +354,55 @@ function PropInstance({ p }: { p: PlacedProp }) {
           </mesh>
         </group>
       )
+    case "guardrail":
+      // posts are 0.05 across and the rail 0.05 deep — all too thin to ink
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          {[-0.4, 0.4].map((x, i) => (
+            <mesh key={i} position={[x, 0.175, 0]} castShadow>
+              <cylinderGeometry args={[0.025, 0.025, 0.35, 6]} />
+              <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            </mesh>
+          ))}
+          <mesh position={[0, 0.3, 0]} castShadow>
+            <boxGeometry args={[0.9, 0.08, 0.05]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+          </mesh>
+        </group>
+      )
+    case "utility-pole":
+      // 0.06 across — no outline
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          <mesh position={[0, 1.3, 0]} castShadow>
+            <cylinderGeometry args={[0.03, 0.03, 2.6, 6]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+          </mesh>
+          <mesh position={[0, 2.35, 0]} castShadow>
+            <boxGeometry args={[0.5, 0.06, 0.06]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+          </mesh>
+        </group>
+      )
+    case "grass-tuft":
+      // no outline and deliberately no castShadow — there are well over a
+      // hundred of these and none of them earns a shadow map pass
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          {(
+            [
+              [-0.05, 0, [0, 0, 0.26]],
+              [0.05, 0.03, [0.22, 0, -0.2]],
+              [0, -0.05, [-0.24, 0, 0.06]],
+            ] as [number, number, [number, number, number]][]
+          ).map(([x, z, rot], i) => (
+            <mesh key={i} position={[x, 0.09, z]} rotation={rot}>
+              <coneGeometry args={[0.05, 0.18, 5]} />
+              <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            </mesh>
+          ))}
+        </group>
+      )
     default:
       return null
   }

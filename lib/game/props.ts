@@ -16,6 +16,9 @@ export type PropKind =
   | "peepal-tree"
   | "lamp-post"
   | "flag"
+  | "guardrail"
+  | "utility-pole"
+  | "grass-tuft"
 
 export type PlacedProp = {
   kind: PropKind
@@ -48,11 +51,130 @@ const PALETTE: Record<string, [string, string][]> = {
 const KIND_COLORS: Partial<Record<PropKind, [string, string]>> = {
   banyan: ["#6b4a2f", "#4e7a34"],
   palace: ["#e8dcc0", "#8a4a3a"],
+  guardrail: ["#f2f0e8", "#d8d5cb"],
+  "utility-pole": ["#6a5a48", "#4d4136"],
+  "grass-tuft": ["#7dbb5a", "#5f9444"],
 }
 
 function paletteFor(zoneId: string, r: () => number): [string, string] {
   const options = PALETTE[zoneId] ?? PALETTE.bazaar
   return options[Math.floor(r() * options.length) % options.length]
+}
+
+/**
+ * The same zone pairs buildRoads() arcs between in terrain.ts. Re-declared here
+ * rather than imported because that list is module-private there; if it ever
+ * changes, this must change with it.
+ */
+const ROAD_PAIRS: [string, string][] = [
+  ["bazaar", "beach"],
+  ["beach", "temple"],
+  ["bazaar", "samadhi"],
+  ["samadhi", "ghat"],
+  ["ghat", "grove"],
+  ["grove", "workshop"],
+  ["grove", "mill"],
+  ["mill", "ghat"],
+  ["haveli", "bazaar"],
+  ["haveli", "grove"],
+  ["bazaar", "ghat"],
+]
+
+const ROAD_STEP = 0.06
+const RAIL_OFFSET = 0.055
+const POLE_OFFSET = 0.07
+const _UP_Y = new THREE.Vector3(0, 1, 0)
+
+/** rotate `dir` by `phi` radians toward `axis` (both unit, mutually perpendicular) */
+function offsetDir(dir: THREE.Vector3, axis: THREE.Vector3, phi: number) {
+  return dir.clone().multiplyScalar(Math.cos(phi)).addScaledVector(axis, Math.sin(phi)).normalize()
+}
+
+/**
+ * Spin value that makes a prop's local +X point along `tangent` once
+ * surfaceQuaternion has stood it up along `dir` — used so guardrails run with
+ * the road instead of across it.
+ */
+function spinAlong(dir: THREE.Vector3, tangent: THREE.Vector3) {
+  const q0 = new THREE.Quaternion().setFromUnitVectors(_UP_Y, dir)
+  const xAxis = new THREE.Vector3(1, 0, 0).applyQuaternion(q0)
+  const cross = new THREE.Vector3().crossVectors(xAxis, tangent)
+  return Math.atan2(cross.dot(dir), xAxis.dot(tangent))
+}
+
+/** great-circle tangent at `dir`, pointing toward `toward` */
+function arcTangent(dir: THREE.Vector3, toward: THREE.Vector3) {
+  const t = toward.clone().addScaledVector(dir, -dir.dot(toward))
+  return t.lengthSq() < 1e-10 ? null : t.normalize()
+}
+
+/** rails, poles and verge tufts walked along every road arc */
+function placeRoadFurniture(props: PlacedProp[]) {
+  const byId = new Map(ZONES.map((z) => [z.id, z]))
+
+  ROAD_PAIRS.forEach(([idA, idB], roadIndex) => {
+    const za = byId.get(idA)
+    const zb = byId.get(idB)
+    if (!za || !zb) return
+
+    const a = new THREE.Vector3(...za.center).normalize()
+    const b = new THREE.Vector3(...zb.center).normalize()
+    const omega = a.angleTo(b)
+    if (omega < ROAD_STEP * 2) return
+    const sinO = Math.sin(omega)
+    const steps = Math.floor(omega / ROAD_STEP)
+
+    const rand = rng(4200 + roadIndex * 17)
+    const poleSide = roadIndex % 2 === 0 ? 1 : -1
+    let seed = 5000 + roadIndex * 300
+
+    const push = (kind: PropKind, dir: THREE.Vector3, spin: number) => {
+      const pos = surfacePoint(dir, 0)
+      if (pos.length() < WATER_LEVEL + 0.3) return
+      const [colorA, colorB] = KIND_COLORS[kind] ?? ["#cccccc", "#999999"]
+      props.push({
+        kind,
+        position: pos,
+        quaternion: surfaceQuaternion(dir, spin),
+        scale: 1,
+        colorA,
+        colorB,
+        seed: seed++,
+      })
+    }
+
+    // interior steps only — the endpoints are the zone centres themselves
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps
+      const dir = a
+        .clone()
+        .multiplyScalar(Math.sin((1 - t) * omega) / sinO)
+        .addScaledVector(b, Math.sin(t * omega) / sinO)
+        .normalize()
+      const tangent = arcTangent(dir, b)
+      if (!tangent) continue
+      const perp = new THREE.Vector3().crossVectors(dir, tangent).normalize()
+
+      // guardrail, alternating sides, lying along the road
+      const railDir = offsetDir(dir, perp, RAIL_OFFSET * (i % 2 === 0 ? 1 : -1))
+      const railTan = arcTangent(railDir, b)
+      if (railTan) push("guardrail", railDir, spinAlong(railDir, railTan))
+
+      // utility pole every fourth step, always the same side of a given road
+      if (i % 4 === 0) {
+        const poleDir = offsetDir(dir, perp, POLE_OFFSET * poleSide)
+        const poleTan = arcTangent(poleDir, b)
+        if (poleTan) push("utility-pole", poleDir, spinAlong(poleDir, poleTan))
+      }
+
+      // two tufts scattered across both verges
+      for (let k = 0; k < 2; k++) {
+        const side = rand() < 0.5 ? -1 : 1
+        const tuftDir = offsetDir(dir, perp, (0.06 + rand() * 0.06) * side)
+        push("grass-tuft", tuftDir, rand() * Math.PI * 2)
+      }
+    }
+  })
 }
 
 export function buildProps(): PlacedProp[] {
@@ -147,6 +269,8 @@ export function buildProps(): PlacedProp[] {
   for (let i = 0; i < 6; i++) {
     add("mango-tree", "beach", beach() * Math.PI * 2, 0.8 + beach() * 1.0, 0.6, 1000 + i)
   }
+
+  placeRoadFurniture(props)
 
   return props
 }
