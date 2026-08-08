@@ -2,11 +2,18 @@
 
 import { useMemo, useRef } from "react"
 import * as THREE from "three"
-import { Html } from "@react-three/drei"
+import { Html, Outlines } from "@react-three/drei"
 import { useFrame } from "@react-three/fiber"
 import { NPCS, type Npc } from "@/lib/game/data"
 import { npcSurfacePosition, surfaceQuaternion, terrainRadius } from "@/lib/game/terrain"
 import { useGameStore, useNpcHasQuest } from "@/lib/game/store"
+import { toonGradient } from "@/lib/game/toon"
+
+const INK = "#2c2620"
+
+function Ink() {
+  return <Outlines thickness={0.03} color={INK} />
+}
 
 /** shared scratch vectors so the per-frame line-of-sight test allocates nothing */
 const _samplePos = new THREE.Vector3()
@@ -58,22 +65,26 @@ function NpcFigure({ npc }: { npc: Npc }) {
         <group>
           <mesh position={[0, 0.22, 0]} castShadow>
             <capsuleGeometry args={[0.14, 0.3, 4, 8]} />
-            <meshStandardMaterial color={npc.outfit} roughness={0.9} />
+            <meshToonMaterial color={npc.outfit} gradientMap={toonGradient} />
+            <Ink />
           </mesh>
           <mesh position={[0, 0.3, 0.22]}>
             <sphereGeometry args={[0.12, 8, 8]} />
-            <meshStandardMaterial color={npc.hair} roughness={0.9} />
+            <meshToonMaterial color={npc.hair} gradientMap={toonGradient} />
+            <Ink />
           </mesh>
         </group>
       ) : isPeacock ? (
         <group>
           <mesh position={[0, 0.35, 0]} castShadow>
             <capsuleGeometry args={[0.13, 0.35, 4, 8]} />
-            <meshStandardMaterial color={npc.outfit} roughness={0.7} />
+            <meshToonMaterial color={npc.outfit} gradientMap={toonGradient} />
+            <Ink />
           </mesh>
           <mesh position={[0, 0.65, -0.25]} rotation={[0.6, 0, 0]}>
             <coneGeometry args={[0.35, 0.6, 10]} />
-            <meshStandardMaterial color={npc.hair} roughness={0.6} />
+            <meshToonMaterial color={npc.hair} gradientMap={toonGradient} />
+            <Ink />
           </mesh>
         </group>
       ) : (
@@ -81,22 +92,26 @@ function NpcFigure({ npc }: { npc: Npc }) {
           {/* legs */}
           <mesh position={[0, 0.35, 0]} castShadow>
             <cylinderGeometry args={[0.13, 0.13, 0.7, 8]} />
-            <meshStandardMaterial color="#3a3630" roughness={0.9} />
+            <meshToonMaterial color="#3a3630" gradientMap={toonGradient} />
+            <Ink />
           </mesh>
           {/* body / outfit */}
           <mesh position={[0, 0.95, 0]} castShadow>
             <capsuleGeometry args={[0.24, 0.5, 4, 8]} />
-            <meshStandardMaterial color={npc.outfit} roughness={0.85} />
+            <meshToonMaterial color={npc.outfit} gradientMap={toonGradient} />
+            <Ink />
           </mesh>
           {/* head */}
           <mesh position={[0, 1.5, 0]} castShadow>
             <sphereGeometry args={[0.22, 12, 12]} />
-            <meshStandardMaterial color={npc.color} roughness={0.8} />
+            <meshToonMaterial color={npc.color} gradientMap={toonGradient} />
+            <Ink />
           </mesh>
           {/* hair */}
           <mesh position={[0, 1.6, 0]}>
             <sphereGeometry args={[0.23, 12, 12, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
-            <meshStandardMaterial color={npc.hair} roughness={0.9} />
+            <meshToonMaterial color={npc.hair} gradientMap={toonGradient} />
+            <Ink />
           </mesh>
         </group>
       )}

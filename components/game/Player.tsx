@@ -2,11 +2,13 @@
 
 import { useRef, useEffect, useMemo } from "react"
 import { useFrame, useThree } from "@react-three/fiber"
+import { Outlines } from "@react-three/drei"
 import * as THREE from "three"
 import { NPCS, PHYSICS, INITIAL_CHARACTER, ZONES } from "@/lib/game/data"
 import { npcSurfacePosition, terrainRadius } from "@/lib/game/terrain"
 import { useGameStore } from "@/lib/game/store"
 import { playerState } from "@/lib/game/playerState"
+import { toonGradient } from "@/lib/game/toon"
 
 const MOVE_SPEED = 0.11
 const TURN_SPEED = 2.6
@@ -298,33 +300,39 @@ export function Player() {
         {/* legs */}
         <mesh position={[0, 0.35, 0]} castShadow>
           <cylinderGeometry args={[0.13, 0.13, 0.7, 8]} />
-          <meshStandardMaterial color="#2b2723" roughness={0.9} />
+          <meshToonMaterial color="#2b2723" gradientMap={toonGradient} />
+          <Outlines thickness={0.03} color="#2c2620" />
         </mesh>
         {/* kurta */}
         <mesh position={[0, 0.98, 0]} castShadow>
           <capsuleGeometry args={[0.25, 0.55, 4, 8]} />
-          <meshStandardMaterial color="#3f7f5c" roughness={0.85} />
+          <meshToonMaterial color="#3f7f5c" gradientMap={toonGradient} />
+          <Outlines thickness={0.03} color="#2c2620" />
         </mesh>
         {/* head */}
         <mesh position={[0, 1.55, 0]} castShadow>
           <sphereGeometry args={[0.22, 12, 12]} />
-          <meshStandardMaterial color="#caa06e" roughness={0.8} />
+          <meshToonMaterial color="#caa06e" gradientMap={toonGradient} />
+          <Outlines thickness={0.03} color="#2c2620" />
         </mesh>
         {/* hair */}
         <mesh position={[0, 1.66, 0]}>
           <sphereGeometry args={[0.23, 12, 12, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
-          <meshStandardMaterial color="#241f19" roughness={0.9} />
+          <meshToonMaterial color="#241f19" gradientMap={toonGradient} />
+          <Outlines thickness={0.03} color="#2c2620" />
         </mesh>
         {/* satchel bag, always worn */}
         <mesh position={[0.22, 1.0, -0.05]} rotation={[0, 0, 0.2]} castShadow>
           <boxGeometry args={[0.28, 0.32, 0.16]} />
-          <meshStandardMaterial color="#8a4a2c" roughness={0.85} />
+          <meshToonMaterial color="#8a4a2c" gradientMap={toonGradient} />
+          <Outlines thickness={0.03} color="#2c2620" />
         </mesh>
         {/* carried parcel indicator */}
         {carrying && (
           <mesh position={[0, 1.95, 0]} castShadow>
             <boxGeometry args={[0.22, 0.2, 0.22]} />
-            <meshStandardMaterial color="#e0a53a" roughness={0.7} />
+            <meshToonMaterial color="#e0a53a" gradientMap={toonGradient} />
+            <Outlines thickness={0.03} color="#2c2620" />
           </mesh>
         )}
       </group>
