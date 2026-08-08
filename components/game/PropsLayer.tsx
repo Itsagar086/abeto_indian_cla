@@ -1,14 +1,74 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useRef } from "react"
 import * as THREE from "three"
 import { Outlines } from "@react-three/drei"
+import { useFrame } from "@react-three/fiber"
 import { buildProps, type PlacedProp } from "@/lib/game/props"
 import { rng } from "@/lib/game/terrain"
 import { toonGradient } from "@/lib/game/toon"
 
 const INK = "#2c2620"
 const EDGE = 0.035
+
+/** seconds per lamp; every signal reads the same clock, so they stay in step */
+const SIGNAL_PERIOD = 3.5
+const LAMP_ON = 1
+const LAMP_OFF = 0.15
+
+/** red -> green -> amber, cycling. Discs sit on the head's +Z face. */
+function TrafficSignal({ p }: { p: PlacedProp }) {
+  const lamps = useRef<(THREE.MeshToonMaterial | null)[]>([null, null, null])
+
+  useFrame(({ clock }) => {
+    const active = Math.floor(clock.getElapsedTime() / SIGNAL_PERIOD) % 3
+    for (let i = 0; i < 3; i++) {
+      const m = lamps.current[i]
+      if (m) m.emissiveIntensity = i === active ? LAMP_ON : LAMP_OFF
+    }
+  })
+
+  // index 0 red (top), 1 amber (middle), 2 green (bottom); cycle order is
+  // red -> green -> amber, so the active index maps 0,2,1
+  const discs: [string, number][] = [
+    ["#d64545", 0.16],
+    ["#e8b84a", 0],
+    ["#57b45a", -0.16],
+  ]
+  const cycleSlot = [0, 2, 1]
+
+  return (
+    <group
+      position={p.position.toArray() as [number, number, number]}
+      quaternion={[p.quaternion.x, p.quaternion.y, p.quaternion.z, p.quaternion.w]}
+      scale={p.scale}
+    >
+      <mesh position={[0, 0.95, 0]} castShadow>
+        <cylinderGeometry args={[0.025, 0.025, 1.9, 6]} />
+        <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+      </mesh>
+      <mesh position={[0, 2, 0]} castShadow>
+        <boxGeometry args={[0.22, 0.55, 0.14]} />
+        <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+        <Outlines thickness={EDGE} color={INK} />
+      </mesh>
+      {discs.map(([color, y], i) => (
+        <mesh key={i} position={[0, 2 + y, 0.072]}>
+          <circleGeometry args={[0.07, 12]} />
+          <meshToonMaterial
+            ref={(m) => {
+              lamps.current[cycleSlot[i]] = m
+            }}
+            color={color}
+            emissive={color}
+            emissiveIntensity={LAMP_OFF}
+            gradientMap={toonGradient}
+          />
+        </mesh>
+      ))}
+    </group>
+  )
+}
 
 /** shared outline, skipped on anything too thin to survive an inverted hull */
 function Ink() {
@@ -405,6 +465,26 @@ function PropInstance({ p }: { p: PlacedProp }) {
           ))}
         </group>
       )
+    case "wire": {
+      if (!p.aux) return null
+      const [a, b] = p.aux
+      // the control point is the midpoint pulled toward the planet centre —
+      // on a sphere that IS the sag
+      const sag = a
+        .clone()
+        .add(b)
+        .multiplyScalar(0.5)
+      sag.addScaledVector(sag.clone().normalize(), -0.35)
+      const curve = new THREE.QuadraticBezierCurve3(a, sag, b)
+      // aux is world-space, so this mesh takes no group transform
+      return (
+        <mesh geometry={new THREE.TubeGeometry(curve, 8, 0.015, 4, false)}>
+          <meshBasicMaterial color={p.colorA} />
+        </mesh>
+      )
+    }
+    case "traffic-signal":
+      return <TrafficSignal p={p} />
     default:
       return null
   }

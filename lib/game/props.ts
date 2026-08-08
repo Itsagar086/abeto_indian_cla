@@ -19,6 +19,8 @@ export type PropKind =
   | "guardrail"
   | "utility-pole"
   | "grass-tuft"
+  | "wire"
+  | "traffic-signal"
 
 export type PlacedProp = {
   kind: PropKind
@@ -28,6 +30,8 @@ export type PlacedProp = {
   colorA: string
   colorB: string
   seed: number
+  /** world-space endpoints. Only "wire" uses this, and it ignores `position`. */
+  aux?: [THREE.Vector3, THREE.Vector3]
 }
 
 const PALETTE: Record<string, [string, string][]> = {
@@ -54,6 +58,8 @@ const KIND_COLORS: Partial<Record<PropKind, [string, string]>> = {
   guardrail: ["#f2f0e8", "#d8d5cb"],
   "utility-pole": ["#6a5a48", "#4d4136"],
   "grass-tuft": ["#7dbb5a", "#5f9444"],
+  wire: ["#2a2a2a", "#1e1e1e"],
+  "traffic-signal": ["#2f2b26", "#1d1a17"],
 }
 
 function paletteFor(zoneId: string, r: () => number): [string, string] {
@@ -85,6 +91,20 @@ const RAIL_OFFSET = 0.055
 const POLE_OFFSET = 0.07
 /** minimum roadDistance any furniture must keep from every road ribbon */
 const RIBBON_CLEAR = 1.15
+/**
+ * Wires only span adjacent poles this close — a longer gap means a pole was
+ * rejected in between, and a wire across it would cut through terrain.
+ *
+ * Poles sit 4 steps apart (0.24 rad), which at terrain radii of 21.5-31 is a
+ * 5.2-7.8u chord; a single missing pole doubles that to 10.2u or more. 9.0
+ * therefore accepts every genuine neighbour and rejects every gap.
+ */
+const WIRE_MAX_SPAN = 9
+/** height the wire attaches at, just under the 2.6 pole tip */
+const POLE_TIP = 2.5
+/** signals stand this far out along each road leaving KR Market */
+const SIGNAL_ANGLE = 0.32
+const SIGNAL_OFFSET = 0.06
 /** verge band the tufts scatter across, in radians either side of the arc */
 const TUFT_NEAR = 0.05
 const TUFT_SPAN = 0.035
@@ -133,15 +153,15 @@ function placeRoadFurniture(props: PlacedProp[]) {
     const poleSide = roadIndex % 2 === 0 ? 1 : -1
     let seed = 5000 + roadIndex * 300
 
-    const push = (kind: PropKind, dir: THREE.Vector3, spin: number) => {
+    const push = (kind: PropKind, dir: THREE.Vector3, spin: number): PlacedProp | null => {
       // nothing may stand on a road ribbon or its very edge. Checked against
       // every arc, so this also clears the pile-ups where roads converge on a
       // zone centre and a rail offset from one road lands on another.
-      if (roadDistance(dir) < RIBBON_CLEAR) return
+      if (roadDistance(dir) < RIBBON_CLEAR) return null
       const pos = surfacePoint(dir, 0)
-      if (pos.length() < WATER_LEVEL + 0.3) return
+      if (pos.length() < WATER_LEVEL + 0.3) return null
       const [colorA, colorB] = KIND_COLORS[kind] ?? ["#cccccc", "#999999"]
-      props.push({
+      const prop: PlacedProp = {
         kind,
         position: pos,
         quaternion: surfaceQuaternion(dir, spin),
@@ -149,8 +169,13 @@ function placeRoadFurniture(props: PlacedProp[]) {
         colorA,
         colorB,
         seed: seed++,
-      })
+      }
+      props.push(prop)
+      return prop
     }
+
+    /** poles that actually survived placement, in order along the arc */
+    const polesOnArc: THREE.Vector3[] = []
 
     // interior steps only — the endpoints are the zone centres themselves
     for (let i = 1; i < steps; i++) {
@@ -173,7 +198,10 @@ function placeRoadFurniture(props: PlacedProp[]) {
       if (i % 4 === 0) {
         const poleDir = offsetDir(dir, perp, POLE_OFFSET * poleSide)
         const poleTan = arcTangent(poleDir, b)
-        if (poleTan) push("utility-pole", poleDir, spinAlong(poleDir, poleTan))
+        if (poleTan) {
+          const placed = push("utility-pole", poleDir, spinAlong(poleDir, poleTan))
+          if (placed) polesOnArc.push(placed.position)
+        }
       }
 
       // two tufts scattered across both verges
@@ -183,7 +211,75 @@ function placeRoadFurniture(props: PlacedProp[]) {
         push("grass-tuft", tuftDir, rand() * Math.PI * 2)
       }
     }
+
+    // string a wire between each surviving pair of neighbouring poles. A gap
+    // wider than WIRE_MAX_SPAN means a pole in between was rejected, and a
+    // wire across it would cut through the ground.
+    const [wireA, wireB] = KIND_COLORS.wire ?? ["#2a2a2a", "#1e1e1e"]
+    for (let i = 0; i + 1 < polesOnArc.length; i++) {
+      const pa = polesOnArc[i]
+      const pb = polesOnArc[i + 1]
+      if (pa.distanceTo(pb) > WIRE_MAX_SPAN) continue
+      const topA = pa.clone().addScaledVector(pa.clone().normalize(), POLE_TIP)
+      const topB = pb.clone().addScaledVector(pb.clone().normalize(), POLE_TIP)
+      props.push({
+        kind: "wire",
+        position: topA.clone().add(topB).multiplyScalar(0.5),
+        quaternion: new THREE.Quaternion(),
+        scale: 1,
+        colorA: wireA,
+        colorB: wireB,
+        seed: seed++,
+        aux: [topA, topB],
+      })
+    }
   })
+
+  // --- traffic signals on the three roads leaving KR Market
+  const bazaar = byId.get("bazaar")
+  if (bazaar) {
+    const bDir = new THREE.Vector3(...bazaar.center).normalize()
+    const [sigA, sigB] = KIND_COLORS["traffic-signal"] ?? ["#2f2b26", "#1d1a17"]
+    const legs: [string, number][] = [
+      ["haveli", 1300],
+      ["ghat", 1301],
+      ["samadhi", 1302],
+    ]
+    for (const [otherId, sigSeed] of legs) {
+      const other = byId.get(otherId)
+      if (!other) continue
+      const oDir = new THREE.Vector3(...other.center).normalize()
+      const outward = arcTangent(bDir, oDir)
+      if (!outward) continue
+      // walk SIGNAL_ANGLE out from the market along this leg
+      const dir = bDir
+        .clone()
+        .multiplyScalar(Math.cos(SIGNAL_ANGLE))
+        .addScaledVector(outward, Math.sin(SIGNAL_ANGLE))
+        .normalize()
+      const tangent = arcTangent(dir, oDir)
+      if (!tangent) continue
+      const perp = new THREE.Vector3().crossVectors(dir, tangent).normalize()
+      const sigDir = offsetDir(dir, perp, SIGNAL_OFFSET)
+      if (roadDistance(sigDir) < RIBBON_CLEAR) continue
+      const pos = surfacePoint(sigDir, 0)
+      if (pos.length() < WATER_LEVEL + 0.3) continue
+      const sigTan = arcTangent(sigDir, oDir)
+      if (!sigTan) continue
+      // local +X onto the perpendicular puts local +Z down the road, so the
+      // signal head faces oncoming traffic
+      const sigPerp = new THREE.Vector3().crossVectors(sigDir, sigTan).normalize()
+      props.push({
+        kind: "traffic-signal",
+        position: pos,
+        quaternion: surfaceQuaternion(sigDir, spinAlong(sigDir, sigPerp)),
+        scale: 1,
+        colorA: sigA,
+        colorB: sigB,
+        seed: sigSeed,
+      })
+    }
+  }
 }
 
 export function buildProps(): PlacedProp[] {
