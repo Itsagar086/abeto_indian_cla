@@ -84,13 +84,13 @@ function makeAnchors(): Anchor[] {
     [0.3, -0.3, 0.9],
     [-0.55, -0.55, 0.63],
   ]
-  for (const d of oceanDirs) push(d, 0.85, 18.4)
+  for (const d of oceanDirs) push(d, 0.85, 29.44)
   return list
 }
 
 const ANCHORS = makeAnchors()
 const SIGMA = 0.4
-const FALLBACK_R = 18.2
+const FALLBACK_R = 29.12
 const FALLBACK_W = 0.09
 
 /* ----------------------------------------------------------------- roads */
@@ -125,6 +125,12 @@ function buildRoads(): Road[] {
   return roads
 }
 
+/**
+ * Angular half-width scale for road ribbons. The planet grew 1.6x while roads
+ * only widen 1.3x in world units, so the angular figure shrinks: 0.045 x (1.3/1.6).
+ */
+const ROAD_BAND = 0.0365625
+
 const ROADS = buildRoads()
 
 const _rv = new THREE.Vector3()
@@ -145,7 +151,7 @@ export function roadDistance(dir: THREE.Vector3) {
     } else {
       d = Math.min(dir.angleTo(road.a), dir.angleTo(road.b))
     }
-    const norm = d / (road.width * 0.045)
+    const norm = d / (road.width * ROAD_BAND)
     if (norm < best) best = norm
   }
   return best
@@ -180,15 +186,15 @@ export function terrainRadius(dir: THREE.Vector3) {
   // large rolling lumps + fine crunch, flattened along the roads
   const road = roadDistance(dir)
   const flat = road < 1 ? 0.15 : road < 1.9 ? 0.15 + 0.85 * ((road - 1) / 0.9) : 1
-  const lumps = fbm(x * 5.1, y * 5.1, z * 5.1, 3) * 1.35
-  const detail = fbm(x * 15.3, y * 15.3, z * 15.3, 3) * 0.42
+  const lumps = fbm(x * 5.1, y * 5.1, z * 5.1, 3) * 2.16
+  const detail = fbm(x * 15.3, y * 15.3, z * 15.3, 3) * 0.672
   const ridges =
-    (1 - Math.abs(fbm(x * 3.2 + 11, y * 3.2 + 5, z * 3.2 + 3, 2))) * 0.75
-  let r = base + (lumps + detail) * flat + ridges * flat * (base > 25 ? 1 : 0.35)
+    (1 - Math.abs(fbm(x * 3.2 + 11, y * 3.2 + 5, z * 3.2 + 3, 2))) * 1.2
+  let r = base + (lumps + detail) * flat + ridges * flat * (base > 40 ? 1 : 0.35)
   // beaches flatten out where they meet the sea
-  if (r < WATER_LEVEL + 1.1) {
-    const t = Math.max(0, (r - (WATER_LEVEL - 1.6)) / 2.7)
-    r = WATER_LEVEL - 1.6 + t * t * 2.7
+  if (r < WATER_LEVEL + 1.76) {
+    const t = Math.max(0, (r - (WATER_LEVEL - 2.56)) / 4.32)
+    r = WATER_LEVEL - 2.56 + t * t * 4.32
   }
   return r
 }
@@ -246,22 +252,22 @@ export function terrainColor(dir: THREE.Vector3, r: number, target: THREE.Color)
   const slope = slopeAt(dir, r)
   const road = roadDistance(dir)
 
-  if (r < WATER_LEVEL + 0.55) {
+  if (r < WATER_LEVEL + 0.88) {
     target.copy(r < WATER_LEVEL ? C.deepSand : C.sand)
-  } else if (slope > 0.55 || r > 33.2) {
+  } else if (slope > 0.55 || r > 53.12) {
     target.copy(slope > 0.75 ? C.rockDark : C.rock)
-    if (r > 34.4) target.lerp(C.snowless, Math.min(1, (r - 34.4) / 2))
+    if (r > 55.04) target.lerp(C.snowless, Math.min(1, (r - 55.04) / 3.2))
   } else {
     const shade = fbm(dir.x * 9.3 + 3, dir.y * 9.3 - 7, dir.z * 9.3 + 1, 2)
     target.copy(C.grass)
     if (shade > 0.12) target.lerp(C.grassLight, Math.min(1, (shade - 0.12) * 3))
     else if (shade < -0.1) target.lerp(C.grassDark, Math.min(1, (-shade - 0.1) * 3))
     // beach fringe
-    if (r < WATER_LEVEL + 1.5) target.lerp(C.sand, (WATER_LEVEL + 1.5 - r) / 0.95)
+    if (r < WATER_LEVEL + 2.4) target.lerp(C.sand, (WATER_LEVEL + 2.4 - r) / 1.52)
   }
 
   // roads: a solid grey ribbon, a pale edge band, then a short feather out
-  if (road < 1.5 && r > WATER_LEVEL + 0.3) {
+  if (road < 1.5 && r > WATER_LEVEL + 0.48) {
     _col.copy(road < 1 ? C.road : C.roadEdge)
     target.lerp(_col, road < 1 ? 0.95 : road < 1.3 ? 0.8 : 0.8 * ((1.5 - road) / 0.2))
   }

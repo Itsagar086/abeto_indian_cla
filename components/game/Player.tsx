@@ -10,12 +10,18 @@ import { useGameStore } from "@/lib/game/store"
 import { playerState } from "@/lib/game/playerState"
 import { toonGradient } from "@/lib/game/toon"
 
-const MOVE_SPEED = 0.11
+/** x1.4 for the 1.6x world — a road takes ~1.15x the old time to walk */
+const MOVE_SPEED = 0.154
 const TURN_SPEED = 2.6
+/** world units, and neither the character nor the NPCs grew — unchanged */
 const TALK_DISTANCE = 2.4
-/** angular radius to enter a zone, and the wider one to leave it (hysteresis) */
-const ZONE_ENTER = 0.3
-const ZONE_EXIT = 0.4
+/**
+ * Angular radius to enter a zone, and the wider one to leave it (hysteresis).
+ * Scaled by 1/1.6 because the same world-unit footprint now subtends a smaller
+ * angle on the larger planet.
+ */
+const ZONE_ENTER = 0.21
+const ZONE_EXIT = 0.28
 const ZONE_CHECK_FRAMES = 30
 /** how far above the ground the camera is held when it would clip into terrain */
 const CAMERA_GROUND_CLEARANCE = 0.6

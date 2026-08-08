@@ -14,15 +14,15 @@ export type Zone = {
 }
 
 export const ZONES: Zone[] = [
-  { id: "bazaar", text: "KR Market", center: [25.2, 11.0, 2.3], radius: 9 },
-  { id: "mill", text: "Binny Mills", center: [-7.8, 4.2, -29.3], radius: 18 },
-  { id: "ghat", text: "Cauvery Riverside", center: [9.36, -15.95, -14.33], radius: 10 },
-  { id: "haveli", text: "Bengaluru Palace", center: [-14.4, -6.1, 27.0], radius: 9 },
-  { id: "grove", text: "Dodda Alada Mara", center: [-8.8, -19.2, 2.5], radius: 13 },
-  { id: "samadhi", text: "SP Road", center: [27.7, -14.2, 13.4], radius: 8 },
-  { id: "workshop", text: "Gopal's Garage", center: [-21.7, -6.8, 6.3], radius: 5.5 },
-  { id: "temple", text: "Nandi Betta Temple", center: [-10.2, 34.8, -3.8], radius: 8 },
-  { id: "beach", text: "Sampangi Kere", center: [-13.1, 15.6, -1.8], radius: 8 },
+  { id: "bazaar", text: "KR Market", center: [40.32, 17.6, 3.68], radius: 9 },
+  { id: "mill", text: "Binny Mills", center: [-12.48, 6.72, -46.88], radius: 18 },
+  { id: "ghat", text: "Cauvery Riverside", center: [14.98, -25.52, -22.93], radius: 10 },
+  { id: "haveli", text: "Bengaluru Palace", center: [-23.04, -9.76, 43.2], radius: 9 },
+  { id: "grove", text: "Dodda Alada Mara", center: [-14.08, -30.72, 4], radius: 13 },
+  { id: "samadhi", text: "SP Road", center: [44.32, -22.72, 21.44], radius: 8 },
+  { id: "workshop", text: "Gopal's Garage", center: [-34.72, -10.88, 10.08], radius: 5.5 },
+  { id: "temple", text: "Nandi Betta Temple", center: [-16.32, 55.68, -6.08], radius: 8 },
+  { id: "beach", text: "Sampangi Kere", center: [-20.96, 24.96, -2.88], radius: 8 },
 ]
 
 /* ------------------------------------------------------------------- npcs */
@@ -64,7 +64,7 @@ export const NPCS: Npc[] = [
     kind: "clerk",
     outfit: "#dcd3bd",
     hair: "#2b2420",
-    position: [27.97, 1.41, 0.54],
+    position: [44.75, 2.26, 0.86],
     texts: ["My tiffin break got cancelled again..."],
   },
   {
@@ -74,7 +74,7 @@ export const NPCS: Npc[] = [
     kind: "manager",
     outfit: "#5a4a63",
     hair: "#3a3532",
-    position: [26.25, 9.71, 1.40],
+    position: [42, 15.54, 2.24],
     texts: ["Deputy Regional Assistant Sub-Manager...", "Has a nice ring to it, no?"],
   },
   {
@@ -84,7 +84,7 @@ export const NPCS: Npc[] = [
     kind: "chaiwala",
     outfit: "#8f5a34",
     hair: "#332822",
-    position: [20.36, 19.17, 2.20],
+    position: [32.58, 30.67, 3.52],
     texts: ["Ek cutting chai, extra elaichi. Always."],
   },
   {
@@ -94,7 +94,7 @@ export const NPCS: Npc[] = [
     kind: "mechanic",
     outfit: "#54503f",
     hair: "#40332a",
-    position: [-22.98, -3.73, 4.72],
+    position: [-36.77, -5.97, 7.55],
     texts: ["This scooter has more patches than paint."],
   },
   {
@@ -104,7 +104,7 @@ export const NPCS: Npc[] = [
     kind: "manager",
     outfit: "#3f4652",
     hair: "#6d6a66",
-    position: [-4.05, 1.06, 25.45],
+    position: [-6.48, 1.7, 40.72],
     texts: ["Hmm. Interesting."],
     talkDistance: 2.2,
   },
@@ -115,7 +115,7 @@ export const NPCS: Npc[] = [
     kind: "flowerseller",
     outfit: "#d98b8b",
     hair: "#3a2a24",
-    position: [27.43, 4.66, 3.58],
+    position: [43.89, 7.46, 5.73],
     texts: ["Marigolds sell fast before a wedding season."],
   },
   {
@@ -125,7 +125,7 @@ export const NPCS: Npc[] = [
     kind: "kid",
     outfit: "#7fa86a",
     hair: "#251d18",
-    position: [-8.91, -21.11, 0.91],
+    position: [-14.26, -33.78, 1.46],
     texts: ["I bet I can climb that mango tree faster than you."],
   },
   {
@@ -135,7 +135,7 @@ export const NPCS: Npc[] = [
     kind: "kid",
     outfit: "#4c4a63",
     hair: "#20242e",
-    position: [30.01, 18.61, -4.71],
+    position: [48.02, 29.78, -7.54],
     texts: [
       "Hey! You're the delivery rider, right?",
       "Have you heard of three.js?",
@@ -150,7 +150,7 @@ export const NPCS: Npc[] = [
     kind: "worker",
     outfit: "#8a5f3a",
     hair: "#33302c",
-    position: [4.17, 4.27, -23.59],
+    position: [6.67, 6.83, -37.74],
     texts: ["Bales in, bales out. Every single day."],
   },
   {
@@ -160,7 +160,7 @@ export const NPCS: Npc[] = [
     kind: "worker",
     outfit: "#9a6a3a",
     hair: "#2b2926",
-    position: [1.6, 8.9, -24.4],
+    position: [2.56, 14.24, -39.04],
     texts: ["New apprentice showed up late again."],
   },
   {
@@ -170,7 +170,7 @@ export const NPCS: Npc[] = [
     kind: "engineer",
     outfit: "#e8e4d8",
     hair: "#403033",
-    position: [-7.46, -7.61, -19.69],
+    position: [-11.94, -12.18, -31.5],
     texts: ["The pump housing has to sit here... and here... and here."],
   },
   {
@@ -180,7 +180,7 @@ export const NPCS: Npc[] = [
     kind: "worker",
     outfit: "#a15f30",
     hair: "#26241f",
-    position: [-7.33, -8.44, -19.35],
+    position: [-11.73, -13.5, -30.96],
     texts: [],
   },
   {
@@ -190,7 +190,7 @@ export const NPCS: Npc[] = [
     kind: "sadhu",
     outfit: "#e0763a",
     hair: "#d8ceb8",
-    position: [-12.64, 17.69, -5.86],
+    position: [-20.22, 28.3, -9.38],
     texts: ["I have walked past this river more times than I can count."],
   },
   {
@@ -200,7 +200,7 @@ export const NPCS: Npc[] = [
     kind: "engineer",
     outfit: "#eceadf",
     hair: "#57514b",
-    position: [10.85, 23.34, -7.73],
+    position: [17.36, 37.34, -12.37],
     texts: ["First, let's work out how much water this village actually needs..."],
   },
   {
@@ -210,7 +210,7 @@ export const NPCS: Npc[] = [
     kind: "boatman",
     outfit: "#3f6a7c",
     hair: "#2c2a28",
-    position: [15.88, 16.90, 11.25],
+    position: [25.41, 27.04, 18],
     texts: ["Come on, old rope... untangle already..."],
     talkDistance: 2.2,
   },
@@ -221,7 +221,7 @@ export const NPCS: Npc[] = [
     kind: "priest",
     outfit: "#d97b3a",
     hair: "#37312c",
-    position: [-8.17, 32.35, -1.77],
+    position: [-13.07, 51.76, -2.83],
     texts: ["Listen closely. Even the wind carries a rhythm."],
   },
   {
@@ -231,7 +231,7 @@ export const NPCS: Npc[] = [
     kind: "grandmother",
     outfit: "#9c6ea0",
     hair: "#d8d4cd",
-    position: [23.37, -16.51, 12.46],
+    position: [37.39, -26.42, 19.94],
     texts: ["Bless you, beta, for carrying an old woman's prayers."],
   },
   {
@@ -241,7 +241,7 @@ export const NPCS: Npc[] = [
     kind: "musician",
     outfit: "#7e6ba8",
     hair: "#3a2c1e",
-    position: [15.03, -14.79, -7.10],
+    position: [24.05, -23.66, -11.36],
     texts: ["Listen — this raag takes an hour just to wake up."],
   },
   {
@@ -251,7 +251,7 @@ export const NPCS: Npc[] = [
     kind: "dog",
     outfit: "#c9a26a",
     hair: "#f2e6da",
-    position: [-8.37, -20.37, 10.03],
+    position: [-13.39, -32.59, 16.05],
     texts: [],
   },
   {
@@ -261,7 +261,7 @@ export const NPCS: Npc[] = [
     kind: "peacock",
     outfit: "#2f6f8f",
     hair: "#1f4a5f",
-    position: [-12.60, -22.75, -2.19],
+    position: [-20.16, -36.4, -3.5],
     texts: [],
   },
 ]
@@ -514,20 +514,32 @@ export const EMOJIS = [
 /* ------------------------------------------------------- character physics */
 
 export const PHYSICS = {
-  jumpForce: 0.145,
+  /** x1.15 for the 1.6x world */
+  jumpForce: 0.16675,
   positionForce: 0.0055,
-  gravity: -0.0102,
+  /**
+   * Retuned x1.15 alongside jumpForce so air time is unchanged (28.4 frames
+   * either way) while the apex rises 1.031 -> 1.185u. The character and every
+   * prop keep their old size, so absolute jump height must NOT scale by 1.6 —
+   * the player still has to clear the same 2.2u mill blocks.
+   */
+  gravity: -0.01173,
   damp: 0.91,
   dampIdle: 0.62,
-  sprintSpeed: 1.35,
+  /** 1.35 * (1.55 / 1.4) so sprint lands on x1.55 once walk is x1.4 */
+  sprintSpeed: 1.4946,
   capsuleRadius: 0.2,
   floorDetectInclination: 0.7,
 }
 
 export const INITIAL_CHARACTER = {
-  position: [-10, 36, 14] as Vec3,
-  relativeCameraPosition: [0, 1, 5] as Vec3,
+  position: [-16, 57.6, 22.4] as Vec3,
+  /**
+   * [1] feeds `+ 1.4` in Player's camera block, so 1.36 gives a 2.76 lift —
+   * the old 2.4 x1.15. [2] is the trail distance, 5 x1.25.
+   */
+  relativeCameraPosition: [0, 1.36, 6.25] as Vec3,
   relativeCameraOffset: [-0.65, 0, 1] as Vec3,
 }
 
-export const WATER_LEVEL = 21.2
+export const WATER_LEVEL = 33.92

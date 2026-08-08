@@ -8,8 +8,11 @@ import { playerState } from "@/lib/game/playerState"
 
 const SIZE = 150
 const FPS = 10
-/** a sixth of the planet fills the radar */
-const THETA_MAX = Math.PI / 3
+/**
+ * Angular sweep the radar covers. Tightened from PI/3 to PI/4.2 for the 1.6x
+ * planet so the dial still shows a similar range in world units.
+ */
+const THETA_MAX = Math.PI / 4.2
 const EDGE = 8
 const USABLE = SIZE / 2 - EDGE
 const PULSE_PERIOD = 1.2
