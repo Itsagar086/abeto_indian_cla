@@ -43,12 +43,13 @@ function PropInstance({ p }: { p: PlacedProp }) {
     case "haveli-arch":
       return (
         <group position={pos} quaternion={quat} scale={p.scale}>
-          <mesh position={[-0.9, 1, 0]} castShadow>
-            <boxGeometry args={[0.35, 2, 0.35]} />
+          {/* supports run 0.8 below grade so they stay buried on a slope */}
+          <mesh position={[-0.9, 0.6, 0]} castShadow>
+            <boxGeometry args={[0.35, 2.8, 0.35]} />
             <meshStandardMaterial color={p.colorA} roughness={0.85} />
           </mesh>
-          <mesh position={[0.9, 1, 0]} castShadow>
-            <boxGeometry args={[0.35, 2, 0.35]} />
+          <mesh position={[0.9, 0.6, 0]} castShadow>
+            <boxGeometry args={[0.35, 2.8, 0.35]} />
             <meshStandardMaterial color={p.colorA} roughness={0.85} />
           </mesh>
           <mesh position={[0, 2.05, 0]} castShadow>
@@ -59,9 +60,55 @@ function PropInstance({ p }: { p: PlacedProp }) {
             <coneGeometry args={[0.35, 0.5, 4]} />
             <meshStandardMaterial color={p.colorB} roughness={0.6} />
           </mesh>
-          <mesh position={[0, 0.05, -1.4]} receiveShadow>
-            <boxGeometry args={[3.2, 0.1, 3.2]} />
-            <meshStandardMaterial color={p.colorB} roughness={0.9} />
+        </group>
+      )
+    case "palace":
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          {/* main block. Every wall runs 0.8 below grade so the downhill edge
+              cannot float and the uphill edge simply buries itself. */}
+          <mesh position={[0, 0.15, 0]} castShadow receiveShadow>
+            <boxGeometry args={[2.6, 1.9, 1.2]} />
+            <meshStandardMaterial color={p.colorA} roughness={0.9} />
+          </mesh>
+
+          {/* centre tower + pyramid roof */}
+          <mesh position={[0, 0.35, 0]} castShadow receiveShadow>
+            <boxGeometry args={[0.9, 2.3, 0.9]} />
+            <meshStandardMaterial color={p.colorA} roughness={0.9} />
+          </mesh>
+          <mesh position={[0, 1.78, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
+            <coneGeometry args={[0.62, 0.55, 4]} />
+            <meshStandardMaterial color={p.colorB} roughness={0.8} />
+          </mesh>
+
+          {/* corner towers, each capped with a cone */}
+          {[-1.25, 1.25].map((x, i) => (
+            <group key={`t${i}`}>
+              <mesh position={[x, 0.45, 0]} castShadow receiveShadow>
+                <cylinderGeometry args={[0.32, 0.32, 2.5, 10]} />
+                <meshStandardMaterial color={p.colorA} roughness={0.9} />
+              </mesh>
+              <mesh position={[x, 2, 0]} castShadow>
+                <coneGeometry args={[0.42, 0.6, 10]} />
+                <meshStandardMaterial color={p.colorB} roughness={0.8} />
+              </mesh>
+            </group>
+          ))}
+
+          {/* battlements along the front top edge. -z is the gate side: the
+              prop spin (ang + PI) puts the arch on this face, not the other */}
+          {[-1, -0.5, 0, 0.5, 1].map((x, i) => (
+            <mesh key={`b${i}`} position={[x, 1.18, -0.5]} castShadow>
+              <boxGeometry args={[0.18, 0.15, 0.18]} />
+              <meshStandardMaterial color={p.colorA} roughness={0.9} />
+            </mesh>
+          ))}
+
+          {/* entrance, facing the gate */}
+          <mesh position={[0, 0.35, -0.61]} castShadow>
+            <boxGeometry args={[0.5, 0.7, 0.1]} />
+            <meshStandardMaterial color="#3a2f28" roughness={0.95} />
           </mesh>
         </group>
       )

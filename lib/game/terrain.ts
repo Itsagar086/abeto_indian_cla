@@ -202,15 +202,15 @@ export function radiusAt(v: THREE.Vector3) {
 /* --------------------------------------------------------------- colours */
 
 const C = {
-  deepSand: new THREE.Color("#c9a876"),
-  sand: new THREE.Color("#e0c191"),
-  grass: new THREE.Color("#7ea34f"),
-  grassDark: new THREE.Color("#5e8339"),
-  grassLight: new THREE.Color("#9cbf66"),
-  rock: new THREE.Color("#ab8f72"),
-  rockDark: new THREE.Color("#8a6f55"),
-  road: new THREE.Color("#c17a4a"),
-  roadEdge: new THREE.Color("#d7a878"),
+  deepSand: new THREE.Color("#d9bd8a"),
+  sand: new THREE.Color("#ecd9a8"),
+  grass: new THREE.Color("#6fae4e"),
+  grassDark: new THREE.Color("#568a39"),
+  grassLight: new THREE.Color("#8fc76a"),
+  rock: new THREE.Color("#b09a7e"),
+  rockDark: new THREE.Color("#8f7a62"),
+  road: new THREE.Color("#8a8a92"),
+  roadEdge: new THREE.Color("#e8e4da"),
   snowless: new THREE.Color("#c9b48f"),
 }
 
@@ -253,13 +253,14 @@ export function terrainColor(dir: THREE.Vector3, r: number, target: THREE.Color)
     if (r < WATER_LEVEL + 1.5) target.lerp(C.sand, (WATER_LEVEL + 1.5 - r) / 0.95)
   }
 
+  // roads: a solid grey ribbon, a pale edge band, then a short feather out
   if (road < 1.5 && r > WATER_LEVEL + 0.3) {
     _col.copy(road < 1 ? C.road : C.roadEdge)
-    target.lerp(_col, road < 1 ? 0.92 : 0.55 * (1.5 - road) / 0.5)
+    target.lerp(_col, road < 1 ? 0.95 : road < 1.3 ? 0.8 : 0.8 * ((1.5 - road) / 0.2))
   }
 
   // faint hand-painted grain
-  const grain = fbm(dir.x * 42, dir.y * 42, dir.z * 42, 2) * 0.05
+  const grain = fbm(dir.x * 42, dir.y * 42, dir.z * 42, 2) * 0.03
   target.offsetHSL(0, 0, grain)
   return target
 }

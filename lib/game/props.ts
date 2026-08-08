@@ -5,6 +5,7 @@ import { surfacePoint, surfaceQuaternion, rng } from "./terrain"
 export type PropKind =
   | "stall"
   | "haveli-arch"
+  | "palace"
   | "temple-dome"
   | "mill-block"
   | "ghat-steps"
@@ -43,8 +44,11 @@ const PALETTE: Record<string, [string, string][]> = {
   beach: [["#e0c191", "#c9a876"]],
 }
 
-/** the banyan is bark + leaves, not its zone's two-tone palette */
-const BANYAN_COLORS: [string, string] = ["#6b4a2f", "#4e7a34"]
+/** props whose colours belong to the object itself, not to its zone palette */
+const KIND_COLORS: Partial<Record<PropKind, [string, string]>> = {
+  banyan: ["#6b4a2f", "#4e7a34"],
+  palace: ["#e8dcc0", "#8a4a3a"],
+}
 
 function paletteFor(zoneId: string, r: () => number): [string, string] {
   const options = PALETTE[zoneId] ?? PALETTE.bazaar
@@ -82,7 +86,7 @@ export function buildProps(): PlacedProp[] {
       .normalize()
     const pos = surfacePoint(dir, 0)
     const quat = surfaceQuaternion(dir, ang + Math.PI)
-    const [a, b] = kind === "banyan" ? BANYAN_COLORS : paletteFor(zoneId, rng(seed))
+    const [a, b] = KIND_COLORS[kind] ?? paletteFor(zoneId, rng(seed))
     if (pos.length() < WATER_LEVEL + 0.3) return
     props.push({ kind, position: pos, quaternion: quat, scale, colorA: a, colorB: b, seed })
   }
@@ -97,11 +101,14 @@ export function buildProps(): PlacedProp[] {
   add("lamp-post", "bazaar", 2.4, 0.6, 1, 151)
   add("flag", "bazaar", 1.0, 0.3, 1, 152)
 
-  // --- haveli: grand arch entrance + walls
-  add("haveli-arch", "haveli", 0, 0.8, 1.6, 300)
-  add("lamp-post", "haveli", 0.6, 1.2, 1, 301)
-  add("lamp-post", "haveli", -0.6, 1.2, 1, 302)
-  add("flag", "haveli", 0, 1.4, 1.2, 303)
+  // --- haveli: Bengaluru Palace behind a gated approach, all on one bearing
+  add("palace", "haveli", 0, 0.3, 1.6, 300)
+  // gate on the SAME bearing (angle 0) as the palace, nearer and deliberately
+  // shorter than its towers, with the lamps flanking the approach
+  add("haveli-arch", "haveli", 0, 1.1, 1.0, 301)
+  add("lamp-post", "haveli", 0.2, 1.0, 1, 302)
+  add("lamp-post", "haveli", -0.2, 1.0, 1, 303)
+  add("flag", "haveli", 0.05, 0.25, 1.1, 304)
 
   // --- mill: rows of factory blocks
   // evenly around the full circle — clustering them in one arc made the 2.2u
