@@ -155,11 +155,11 @@ export const METRO_TOUR_LENGTH = (() => {
 
 const DECK_SAMPLE = 0.02
 const DECK_SMOOTH = 7
-const DECK_RISE = 5
-const DECK_MIN_CLEAR = 4
-const DECK_WATER = WATER_LEVEL + 3
+const DECK_RISE = 8
+const DECK_MIN_CLEAR = 6.4
+const DECK_WATER = WATER_LEVEL + 4.8
 /** generous on purpose: a tight limit ratchets the deck up over rough ground */
-const DECK_MAX_STEP = 0.25
+const DECK_MAX_STEP = 0.4
 
 const PILLAR_STEP = 0.075
 
@@ -169,8 +169,8 @@ const STATION_LEAD = 0.3
 const SLIDE_STEP = 0.02
 const SLIDE_MAX = 0.2
 /** required world clearance from big props (scale >= 1) and from small ones */
-const CLEAR_BIG = 3.5
-const CLEAR_SMALL = 1.2
+const CLEAR_BIG = 5.6
+const CLEAR_SMALL = 1.92
 
 export type StationInfo = {
   zone: string
@@ -287,7 +287,7 @@ function siteStations(placed: PlacedProp[]) {
       for (const off of offsets) {
         const dir = advance(zoneDir, nextDir, lead + off)
         const ground = terrainRadius(dir)
-        if (ground < WATER_LEVEL + 0.3) continue
+        if (ground < WATER_LEVEL + 0.48) continue
         if (pass === 1 && roadDistance(dir) < RIBBON_CLEAR) continue
         const pos = dir.clone().multiplyScalar(ground)
         const { ok, nearest } = propClearance(pos, placed)
@@ -588,7 +588,7 @@ function placeMetro(props: PlacedProp[]) {
     const t = i * step
     loopDir(t, dir)
     const ground = terrainRadius(dir)
-    if (ground < WATER_LEVEL + 0.3) continue
+    if (ground < WATER_LEVEL + 0.48) continue
     const base = dir.clone().multiplyScalar(ground)
     const top = dir.clone().multiplyScalar(deckRadius(t))
     const ahead = new THREE.Vector3()
@@ -684,9 +684,9 @@ const RIBBON_CLEAR = 1.15
  * 5.2-7.8u chord; a single missing pole doubles that to 10.2u or more. 9.0
  * therefore accepts every genuine neighbour and rejects every gap.
  */
-const WIRE_MAX_SPAN = 9
+const WIRE_MAX_SPAN = 14.4
 /** height the wire attaches at, just under the 2.6 pole tip */
-const POLE_TIP = 2.5
+const POLE_TIP = 4
 /** signals stand this far out along each road leaving KR Market */
 const SIGNAL_ANGLE = 0.32
 const SIGNAL_OFFSET = 0.06
@@ -764,15 +764,15 @@ function aimAtZone(props: PlacedProp[], zoneId: string, axis: "x" | "z") {
 
 /* ----------------------------------------------------------- road bridges */
 
-const WET_MARK = WATER_LEVEL + 0.25
+const WET_MARK = WATER_LEVEL + 0.4
 const BRIDGE_SAMPLE = 0.02
 const MIN_SPAN = 0.03
 /** ramp length at each bank, in radians */
 const BRIDGE_RAMP = 0.04
-const BRIDGE_DECK_R = WATER_LEVEL + 0.6
-const BRIDGE_HALF_WIDTH = 0.9
+const BRIDGE_DECK_R = WATER_LEVEL + 0.96
+const BRIDGE_HALF_WIDTH = 1.44
 /** roughly one pier per this many world units of wet span */
-const PIER_SPACING = 1.5
+const PIER_SPACING = 2.4
 
 export type BridgeSpan = {
   road: number
@@ -991,8 +991,15 @@ function placeRoadFurniture(props: PlacedProp[]) {
       // every arc, so this also clears the pile-ups where roads converge on a
       // zone centre and a rail offset from one road lands on another.
       if (roadDistance(dir) < RIBBON_CLEAR) return null
+      // arterials carry footpaths instead of verge furniture
+      if (
+        (kind === "guardrail" || kind === "grass-tuft") &&
+        arterialDistance(dir) < CORRIDOR_SUPPRESS
+      ) {
+        return null
+      }
       const pos = surfacePoint(dir, 0)
-      if (pos.length() < WATER_LEVEL + 0.3) return null
+      if (pos.length() < WATER_LEVEL + 0.48) return null
       const [colorA, colorB] = KIND_COLORS[kind] ?? ["#cccccc", "#999999"]
       const prop: PlacedProp = {
         kind,
@@ -1099,7 +1106,7 @@ function placeRoadFurniture(props: PlacedProp[]) {
       const sigDir = offsetDir(dir, perp, SIGNAL_OFFSET)
       if (roadDistance(sigDir) < RIBBON_CLEAR) continue
       const pos = surfacePoint(sigDir, 0)
-      if (pos.length() < WATER_LEVEL + 0.3) continue
+      if (pos.length() < WATER_LEVEL + 0.48) continue
       const sigTan = arcTangent(sigDir, oDir)
       if (!sigTan) continue
       // local +X onto the perpendicular puts local +Z down the road, so the
@@ -1170,7 +1177,7 @@ function placeRoadFurniture(props: PlacedProp[]) {
       const dir = offsetDir(onRoad, perp, SIGN_OFFSET * side)
       if (roadDistance(dir) < RIBBON_CLEAR) continue
       const pos = surfacePoint(dir, 0)
-      if (pos.length() < WATER_LEVEL + 0.3) continue
+      if (pos.length() < WATER_LEVEL + 0.48) continue
       const boardTan = arcTangent(dir, oDir)
       if (!boardTan) continue
       // local +X onto the perpendicular leaves local +Z down the road, so the
@@ -1216,7 +1223,7 @@ export function buildProps(): PlacedProp[] {
     // a pure angular offset in radians. zone.radius is a world-unit value and
     // must never enter here — multiplying by it flung props tens of degrees
     // away from the zone they belong to (BUG-102).
-    const dist = distFrac * 0.05
+    const dist = distFrac * 0.03125
     const dir = center
       .clone()
       .addScaledVector(t1, Math.cos(ang) * dist)
@@ -1225,7 +1232,7 @@ export function buildProps(): PlacedProp[] {
     const pos = surfacePoint(dir, 0)
     const quat = surfaceQuaternion(dir, ang + Math.PI)
     const [a, b] = KIND_COLORS[kind] ?? paletteFor(zoneId, rng(seed))
-    if (pos.length() < WATER_LEVEL + 0.3) return
+    if (pos.length() < WATER_LEVEL + 0.48) return
     props.push({ kind, position: pos, quaternion: quat, scale, colorA: a, colorB: b, seed })
   }
 
@@ -1305,4 +1312,298 @@ export function buildProps(): PlacedProp[] {
   placeMetro(props)
 
   return props
+}
+
+/* ------------------------------------------------------- arterial corridor */
+
+/** the nine consecutive zone pairs of the metro tour — the arterial network */
+export const ARTERIAL_PAIRS: [string, string][] = METRO_ZONE_IDS.map((id, i) => [
+  id,
+  METRO_ZONE_IDS[(i + 1) % METRO_ZONE_IDS.length],
+])
+
+type Arterial = { a: THREE.Vector3; b: THREE.Vector3; n: THREE.Vector3; omega: number }
+
+const ARTERIAL_ARCS: Arterial[] = (() => {
+  const byId = new Map(ZONES.map((z) => [z.id, z]))
+  const arcs: Arterial[] = []
+  for (const [ia, ib] of ARTERIAL_PAIRS) {
+    const za = byId.get(ia)
+    const zb = byId.get(ib)
+    if (!za || !zb) continue
+    const a = new THREE.Vector3(...za.center).normalize()
+    const b = new THREE.Vector3(...zb.center).normalize()
+    arcs.push({ a, b, n: new THREE.Vector3().crossVectors(a, b).normalize(), omega: a.angleTo(b) })
+  }
+  return arcs
+})()
+
+const _artProbe = new THREE.Vector3()
+
+/** lateral world distance from `dir` to the nearest arterial centreline */
+export function arterialDistance(dir: THREE.Vector3) {
+  let best = Infinity
+  for (const arc of ARTERIAL_ARCS) {
+    const along = _artProbe.copy(dir).projectOnPlane(arc.n)
+    if (along.lengthSq() < 1e-9) continue
+    along.normalize()
+    const ab = arc.a.dot(arc.b)
+    const inside = along.dot(arc.a) >= ab - 1e-4 && along.dot(arc.b) >= ab - 1e-4
+    const ang = inside
+      ? Math.abs(Math.asin(Math.max(-1, Math.min(1, dir.dot(arc.n)))))
+      : Math.min(dir.angleTo(arc.a), dir.angleTo(arc.b))
+    if (ang < best) best = ang
+  }
+  return best === Infinity ? Infinity : best * terrainRadius(dir)
+}
+
+/* --- cross-section, in world units either side of the centreline --------- */
+
+const CORRIDOR_STEP = 0.015
+/** guardrails and tufts stand down inside this half-width; footpaths replace them */
+export const CORRIDOR_SUPPRESS = 2.9
+const ASPHALT_LIFT = 0.06
+const PAINT_LIFT = 0.08
+const MEDIAN_TOP = 0.2
+const FOOTPATH_TOP = 0.16
+/** carriageways span 0.3..2.0 either side: 1.7 wide, centred on 1.15 */
+const LANE_IN = 0.3
+const LANE_OUT = 2.0
+const LANE_MID = 1.15
+const MEDIAN_HALF = 0.25
+const FOOT_IN = 2.0
+const FOOT_OUT = 2.7
+const MARK_HALF = 0.025
+const DASH_ON = 0.35
+const DASH_PERIOD = 0.8
+/** median breaks this close to a metro pillar footing */
+const PILLAR_CLEAR = 1.2
+/**
+ * A median vertex sits up to this far from its centreline sample, so the break
+ * is widened by it — otherwise the 1.2u rule holds at the centreline while a
+ * corner still creeps to 0.97u.
+ */
+const MEDIAN_REACH = Math.hypot(MEDIAN_HALF, MEDIAN_TOP)
+/**
+ * Cross-slope clamp. The corridor is a graded roadway, not a terrain drape:
+ * an edge may sit at most tan(this) x its lateral offset away from the
+ * centreline height, which stops the ribbon shearing across bumpy ground.
+ */
+const MAX_TWIST = 0.12
+
+const CORRIDOR_COLORS = {
+  asphalt: "#5a5a60",
+  paint: "#e8e4da",
+  median: "#b8b2a6",
+  footpath: "#cfc4ae",
+}
+
+/** growable indexed triangle soup */
+class MeshBuf {
+  pos: number[] = []
+  idx: number[] = []
+  vert(v: THREE.Vector3) {
+    this.pos.push(v.x, v.y, v.z)
+    return this.pos.length / 3 - 1
+  }
+  quad(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3) {
+    const ia = this.vert(a)
+    const ib = this.vert(b)
+    const ic = this.vert(c)
+    const id = this.vert(d)
+    this.idx.push(ia, ib, ic, ia, ic, id)
+  }
+  get empty() {
+    return this.idx.length === 0
+  }
+  build() {
+    const g = new THREE.BufferGeometry()
+    g.setAttribute("position", new THREE.Float32BufferAttribute(this.pos, 3))
+    g.setIndex(this.idx)
+    g.computeVertexNormals()
+    return g
+  }
+}
+
+type Sample = {
+  dir: THREE.Vector3
+  right: THREE.Vector3
+  ground: number
+  dry: boolean
+  medianOk: boolean
+  s: number
+}
+
+/** point `o` units to the right of the centreline, `lift` above the ground */
+function crossPoint(s: Sample, o: number, lift: number, groundAt: number) {
+  const h = groundAt + lift
+  return s.dir.clone().addScaledVector(s.right, o / h).normalize().multiplyScalar(h)
+}
+
+/** ground height at lateral offset `o`, clamped to the cross-slope limit */
+function edgeGround(s: Sample, o: number) {
+  const probe = s.dir.clone().addScaledVector(s.right, o / s.ground).normalize()
+  const raw = terrainRadius(probe)
+  const limit = Math.abs(o) * Math.tan(MAX_TWIST)
+  return s.ground + Math.max(-limit, Math.min(limit, raw - s.ground))
+}
+
+export type CorridorMesh = { key: string; geometry: THREE.BufferGeometry; color: string }
+
+/** the whole arterial cross-section, merged into one geometry per element */
+export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
+  const pillars = props.filter((p) => p.kind === "metro-pillar").map((p) => p.position)
+  const out: CorridorMesh[] = []
+
+  ARTERIAL_ARCS.forEach((arc, ai) => {
+    const steps = Math.max(2, Math.ceil(arc.omega / CORRIDOR_STEP))
+    const samples: Sample[] = []
+    const dir = new THREE.Vector3()
+    const fwd = new THREE.Vector3()
+    let run = 0
+
+    for (let i = 0; i <= steps; i++) {
+      const t = (i / steps) * arc.omega
+      const s = Math.sin(arc.omega)
+      dir
+        .copy(arc.a)
+        .multiplyScalar(Math.sin(arc.omega - t) / s)
+        .addScaledVector(arc.b, Math.sin(t) / s)
+        .normalize()
+      fwd.crossVectors(arc.n, dir).normalize()
+      const right = new THREE.Vector3().crossVectors(fwd, dir).normalize()
+      const ground = terrainRadius(dir)
+      const centre = dir.clone().multiplyScalar(ground)
+      let medianOk = true
+      for (const p of pillars) {
+        if (centre.distanceTo(p) < PILLAR_CLEAR + MEDIAN_REACH) {
+          medianOk = false
+          break
+        }
+      }
+      if (i > 0) run += (arc.omega / steps) * ground
+      samples.push({
+        dir: dir.clone(),
+        right,
+        ground,
+        dry:
+          ground >= WATER_LEVEL + 0.48 &&
+          // the section reaches +-FOOT_OUT, so both verges must be dry too
+          terrainRadius(
+            dir.clone().addScaledVector(right, FOOT_OUT / ground).normalize(),
+          ) >= WATER_LEVEL + 0.48 &&
+          terrainRadius(
+            dir.clone().addScaledVector(right, -FOOT_OUT / ground).normalize(),
+          ) >= WATER_LEVEL + 0.48,
+        medianOk,
+        s: run,
+      })
+    }
+
+    const asphalt = new MeshBuf()
+    const paint = new MeshBuf()
+    const median = new MeshBuf()
+    const footpath = new MeshBuf()
+
+    const flat = (m: MeshBuf, s0: Sample, s1: Sample, oL: number, oR: number, lift: number) => {
+      const g0L = edgeGround(s0, oL)
+      const g0R = edgeGround(s0, oR)
+      const g1L = edgeGround(s1, oL)
+      const g1R = edgeGround(s1, oR)
+      m.quad(
+        crossPoint(s0, oL, lift, g0L),
+        crossPoint(s0, oR, lift, g0R),
+        crossPoint(s1, oR, lift, g1R),
+        crossPoint(s1, oL, lift, g1L),
+      )
+    }
+
+    const raised = (m: MeshBuf, s0: Sample, s1: Sample, oL: number, oR: number, top: number) => {
+      const g0L = edgeGround(s0, oL)
+      const g0R = edgeGround(s0, oR)
+      const g1L = edgeGround(s1, oL)
+      const g1R = edgeGround(s1, oR)
+      const t0L = crossPoint(s0, oL, top, g0L)
+      const t0R = crossPoint(s0, oR, top, g0R)
+      const t1R = crossPoint(s1, oR, top, g1R)
+      const t1L = crossPoint(s1, oL, top, g1L)
+      const b0L = crossPoint(s0, oL, ASPHALT_LIFT, g0L)
+      const b0R = crossPoint(s0, oR, ASPHALT_LIFT, g0R)
+      const b1R = crossPoint(s1, oR, ASPHALT_LIFT, g1R)
+      const b1L = crossPoint(s1, oL, ASPHALT_LIFT, g1L)
+      m.quad(t0L, t0R, t1R, t1L) // top
+      m.quad(t0R, b0R, b1R, t1R) // outer face
+      m.quad(b0L, t0L, t1L, b1L) // inner face
+    }
+
+    for (let i = 0; i < steps; i++) {
+      const s0 = samples[i]
+      const s1 = samples[i + 1]
+      if (!s0.dry || !s1.dry) continue // bridges already carry the water crossings
+
+      for (const sign of [-1, 1]) {
+        const inner = sign * LANE_IN
+        const outer = sign * LANE_OUT
+        const oL = Math.min(inner, outer)
+        const oR = Math.max(inner, outer)
+        flat(asphalt, s0, s1, oL, oR, ASPHALT_LIFT)
+
+        // solid edge line on the outer edge
+        const edge = sign * (LANE_OUT - MARK_HALF * 2)
+        flat(paint, s0, s1, Math.min(edge, outer), Math.max(edge, outer), PAINT_LIFT)
+
+        // dashed lane centre line
+        const phase = s0.s % DASH_PERIOD
+        if (phase < DASH_ON) {
+          flat(
+            paint,
+            s0,
+            s1,
+            sign * LANE_MID - MARK_HALF,
+            sign * LANE_MID + MARK_HALF,
+            PAINT_LIFT,
+          )
+        }
+
+        // footpath
+        raised(
+          footpath,
+          s0,
+          s1,
+          Math.min(sign * FOOT_IN, sign * FOOT_OUT),
+          Math.max(sign * FOOT_IN, sign * FOOT_OUT),
+          FOOTPATH_TOP,
+        )
+      }
+
+      // median, broken around every pillar footing
+      if (s0.medianOk && s1.medianOk) {
+        raised(median, s0, s1, -MEDIAN_HALF, MEDIAN_HALF, MEDIAN_TOP)
+      }
+    }
+
+    const pairs: [MeshBuf, string, string][] = [
+      [asphalt, "asphalt", CORRIDOR_COLORS.asphalt],
+      [paint, "paint", CORRIDOR_COLORS.paint],
+      [median, "median", CORRIDOR_COLORS.median],
+      [footpath, "footpath", CORRIDOR_COLORS.footpath],
+    ]
+    for (const [buf, name, color] of pairs) {
+      if (buf.empty) continue
+      out.push({ key: `${ai}-${name}`, geometry: buf.build(), color })
+    }
+  })
+
+  return out
+}
+
+/** counts for reporting */
+export function corridorStats(meshes: CorridorMesh[]) {
+  let tris = 0
+  let verts = 0
+  for (const m of meshes) {
+    tris += (m.geometry.getIndex()?.count ?? 0) / 3
+    verts += m.geometry.getAttribute("position").count
+  }
+  return { meshes: meshes.length, tris, verts }
 }

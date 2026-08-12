@@ -4,7 +4,14 @@ import { useMemo, useRef } from "react"
 import * as THREE from "three"
 import { Outlines } from "@react-three/drei"
 import { useFrame } from "@react-three/fiber"
-import { buildProps, deckPoint, metroTrainState, type PlacedProp } from "@/lib/game/props"
+import {
+  buildProps,
+  buildCorridors,
+  deckPoint,
+  metroTrainState,
+  type CorridorMesh,
+  type PlacedProp,
+} from "@/lib/game/props"
 import { rng } from "@/lib/game/terrain"
 import { toonGradient } from "@/lib/game/toon"
 import { KANNADA_FONT_STACK, makeSignTexture } from "@/lib/game/signage"
@@ -986,13 +993,34 @@ function MetroTrains() {
   )
 }
 
+/**
+ * The arterial cross-section. Every element type is merged into one geometry
+ * per arc, so nine dual carriageways cost a few dozen draw calls instead of the
+ * ~5,300 a segment-per-mesh build would need. No outlines: an inverted hull on
+ * a long merged ribbon reads as a smear, not an edge.
+ */
+function Corridors({ meshes }: { meshes: CorridorMesh[] }) {
+  return (
+    <group>
+      {meshes.map((m) => (
+        <mesh key={m.key} geometry={m.geometry} receiveShadow>
+          <meshToonMaterial color={m.color} gradientMap={toonGradient} />
+        </mesh>
+      ))}
+    </group>
+  )
+}
+
 export function PropsLayer() {
   const props = useMemo(() => buildProps(), [])
+  // corridors need the metro pillars, which buildProps places
+  const corridors = useMemo(() => buildCorridors(props), [props])
   return (
     <group>
       {props.map((p, i) => (
         <PropInstance key={i} p={p} />
       ))}
+      <Corridors meshes={corridors} />
       <MetroTrains />
     </group>
   )

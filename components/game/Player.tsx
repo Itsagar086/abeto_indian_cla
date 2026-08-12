@@ -24,14 +24,14 @@ const ZONE_ENTER = 0.21
 const ZONE_EXIT = 0.28
 const ZONE_CHECK_FRAMES = 30
 /** how far above the ground the camera is held when it would clip into terrain */
-const CAMERA_GROUND_CLEARANCE = 0.6
+const CAMERA_GROUND_CLEARANCE = 0.96
 /** per-frame easing of that lift, so the clamp glides instead of popping */
 const CAMERA_CLAMP_LERP = 0.35
 
 /** line-of-sight probe between the player's eye and the camera */
 const CAM_LOS_SAMPLES = 8
-const CAM_LOS_CLEARANCE = 0.35
-const CAM_MIN_DIST = 1.3
+const CAM_LOS_CLEARANCE = 0.56
+const CAM_MIN_DIST = 2.08
 /** pull in fast when the view is blocked, ease back out slowly */
 const CAM_LOS_IN_LERP = 0.4
 const CAM_LOS_OUT_LERP = 0.08
