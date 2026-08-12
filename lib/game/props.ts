@@ -6,6 +6,7 @@ import {
   rng,
   roadDistance,
   terrainRadius,
+  terrainColor,
   npcSurfacePosition,
 } from "./terrain"
 
@@ -1460,10 +1461,14 @@ const PILLAR_CLEAR = 1.2
 const MEDIAN_REACH = Math.hypot(MEDIAN_HALF, MEDIAN_TOP)
 /**
  * Cross-slope clamp. The corridor is a graded roadway, not a terrain drape:
- * an edge may sit at most tan(this) x its lateral offset away from the
- * centreline height, which stops the ribbon shearing across bumpy ground.
+ * an edge may sit at most tan(this) x its lateral offset from the centreline
+ * height. 0.12 was a guess and far too tight for this terrain — 64% of the
+ * corridor demanded more, so the ground erupted through the deck. Measured
+ * requirement: p90 = 0.46 rad, which is what this now allows.
  */
-const MAX_TWIST = 0.12
+const MAX_TWIST = 0.46
+/** the verge apron reaches this far out, blending the deck edge into the ground */
+const SKIRT_OUT = 3.3
 
 const CORRIDOR_COLORS = {
   asphalt: "#5a5a60",
@@ -1472,12 +1477,14 @@ const CORRIDOR_COLORS = {
   footpath: "#cfc4ae",
 }
 
-/** growable indexed triangle soup */
+/** growable indexed triangle soup, optionally carrying per-vertex colour */
 class MeshBuf {
   pos: number[] = []
   idx: number[] = []
-  vert(v: THREE.Vector3) {
+  col: number[] = []
+  vert(v: THREE.Vector3, c?: THREE.Color) {
     this.pos.push(v.x, v.y, v.z)
+    if (c) this.col.push(c.r, c.g, c.b)
     return this.pos.length / 3 - 1
   }
   quad(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3) {
@@ -1487,12 +1494,30 @@ class MeshBuf {
     const id = this.vert(d)
     this.idx.push(ia, ib, ic, ia, ic, id)
   }
+  /** same winding as quad(), with a colour per corner */
+  quadC(
+    a: THREE.Vector3,
+    ca: THREE.Color,
+    b: THREE.Vector3,
+    cb: THREE.Color,
+    c: THREE.Vector3,
+    cc: THREE.Color,
+    d: THREE.Vector3,
+    cd: THREE.Color,
+  ) {
+    const ia = this.vert(a, ca)
+    const ib = this.vert(b, cb)
+    const ic = this.vert(c, cc)
+    const id = this.vert(d, cd)
+    this.idx.push(ia, ib, ic, ia, ic, id)
+  }
   get empty() {
     return this.idx.length === 0
   }
   build() {
     const g = new THREE.BufferGeometry()
     g.setAttribute("position", new THREE.Float32BufferAttribute(this.pos, 3))
+    if (this.col.length) g.setAttribute("color", new THREE.Float32BufferAttribute(this.col, 3))
     g.setIndex(this.idx)
     g.computeVertexNormals()
     return g
@@ -1522,7 +1547,13 @@ function edgeGround(s: Sample, o: number) {
   return s.ground + Math.max(-limit, Math.min(limit, raw - s.ground))
 }
 
-export type CorridorMesh = { key: string; geometry: THREE.BufferGeometry; color: string }
+export type CorridorMesh = {
+  key: string
+  geometry: THREE.BufferGeometry
+  color: string
+  /** the verge apron carries terrain colours per vertex */
+  vertexColors?: boolean
+}
 
 /** the whole arterial cross-section, merged into one geometry per element */
 export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
@@ -1578,6 +1609,43 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
     const paint = new MeshBuf()
     const median = new MeshBuf()
     const footpath = new MeshBuf()
+    const skirt = new MeshBuf()
+
+    /** ground colour where the apron meets the land, so it reads as earth */
+    const groundColour = (s: Sample, o: number) => {
+      const probe = s.dir.clone().addScaledVector(s.right, o / s.ground).normalize()
+      const c = new THREE.Color()
+      terrainColor(probe, terrainRadius(probe), c)
+      return c
+    }
+    /** raw (unclamped) surface point at a lateral offset */
+    const groundPoint = (s: Sample, o: number) => {
+      const probe = s.dir.clone().addScaledVector(s.right, o / s.ground).normalize()
+      return probe.multiplyScalar(terrainRadius(probe))
+    }
+
+    /**
+     * Verge apron. The deck is graded, the land is not, so its outer edge sits
+     * above or below the ground by a variable amount. This closes that step
+     * with a sloped face — a cut bank where the land is higher, fill where it
+     * is lower — instead of leaving a torn edge for terrain to show through.
+     */
+    const skirtSide = (s0: Sample, s1: Sample, sign: 1 | -1) => {
+      const inner = sign * FOOT_OUT
+      const outer = sign * SKIRT_OUT
+      const i0 = crossPoint(s0, inner, FOOTPATH_TOP, edgeGround(s0, inner))
+      const i1 = crossPoint(s1, inner, FOOTPATH_TOP, edgeGround(s1, inner))
+      const o0 = groundPoint(s0, outer)
+      const o1 = groundPoint(s1, outer)
+      const c0 = groundColour(s0, outer)
+      const c1 = groundColour(s1, outer)
+      // wind by increasing lateral offset so normals face outward
+      if (sign === 1) {
+        skirt.quadC(i0, c0, o0, c0, o1, c1, i1, c1)
+      } else {
+        skirt.quadC(o0, c0, i0, c0, i1, c1, o1, c1)
+      }
+    }
 
     const flat = (m: MeshBuf, s0: Sample, s1: Sample, oL: number, oR: number, lift: number) => {
       const g0L = edgeGround(s0, oL)
@@ -1654,17 +1722,21 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
       if (s0.medianOk && s1.medianOk) {
         raised(median, s0, s1, -MEDIAN_HALF, MEDIAN_HALF, MEDIAN_TOP)
       }
+
+      skirtSide(s0, s1, 1)
+      skirtSide(s0, s1, -1)
     }
 
-    const pairs: [MeshBuf, string, string][] = [
-      [asphalt, "asphalt", CORRIDOR_COLORS.asphalt],
-      [paint, "paint", CORRIDOR_COLORS.paint],
-      [median, "median", CORRIDOR_COLORS.median],
-      [footpath, "footpath", CORRIDOR_COLORS.footpath],
+    const pairs: [MeshBuf, string, string, boolean][] = [
+      [asphalt, "asphalt", CORRIDOR_COLORS.asphalt, false],
+      [paint, "paint", CORRIDOR_COLORS.paint, false],
+      [median, "median", CORRIDOR_COLORS.median, false],
+      [footpath, "footpath", CORRIDOR_COLORS.footpath, false],
+      [skirt, "skirt", "#ffffff", true],
     ]
-    for (const [buf, name, color] of pairs) {
+    for (const [buf, name, color, vertexColors] of pairs) {
       if (buf.empty) continue
-      out.push({ key: `${ai}-${name}`, geometry: buf.build(), color })
+      out.push({ key: `${ai}-${name}`, geometry: buf.build(), color, vertexColors })
     }
   })
 

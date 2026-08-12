@@ -1004,7 +1004,11 @@ function Corridors({ meshes }: { meshes: CorridorMesh[] }) {
     <group>
       {meshes.map((m) => (
         <mesh key={m.key} geometry={m.geometry} receiveShadow>
-          <meshToonMaterial color={m.color} gradientMap={toonGradient} />
+          <meshToonMaterial
+            color={m.color}
+            vertexColors={m.vertexColors ?? false}
+            gradientMap={toonGradient}
+          />
         </mesh>
       ))}
     </group>
