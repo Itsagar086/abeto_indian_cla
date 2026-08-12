@@ -111,6 +111,20 @@ function buildRoads(): Road[] {
     ["haveli", "bazaar", 0.9],
     ["haveli", "grove", 0.75],
     ["bazaar", "ghat", 0.8],
+    // The metro loop runs an arterial along all nine consecutive zone pairs, but
+    // four of them had no road here, so those segments crossed unflattened ground
+    // and the corridor tore through it.
+    //
+    // 1.4 rather than the 0.7-0.9 the other roads use. Width sets how far out the
+    // fully-suppressed core reaches, and these four carry a corridor 2.7u wide to
+    // the footpath edge: at 0.8 the noise ramps back up *inside* that footprint
+    // and the corridor tears worse than with no road at all. 1.4 puts the whole
+    // cross-section in the core. The painted ribbon widens too, but the corridor
+    // covers it -- only 0.1-0.5u of pale verge shows, less than beach-temple.
+    ["samadhi", "grove", 1.4],
+    ["haveli", "workshop", 1.4],
+    ["workshop", "beach", 1.4],
+    ["temple", "mill", 1.4],
   ]
   const roads: Road[] = []
   for (const [x, y, w] of pairs) {
