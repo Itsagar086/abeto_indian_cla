@@ -92,19 +92,28 @@ function PropInstance({ p }: { p: PlacedProp }) {
 
   switch (p.kind) {
     case "civic-pad": {
-      // A reserved plot, not a building. p.scale carries the disc radius, so the
-      // slab's own thickness is divided back out to keep it 0.08u tall whatever
+      // A reserved plot, not a building. p.scale carries the disc radius, so
+      // every world dimension is divided back out to stay the same size whatever
       // the plot's size. No outline and no collision — it is ground, not an object.
-      const thickness = 0.08 / p.scale
+      //
+      // The slab is sunk so only PAD_SHOW stands proud: sitting the full 0.08u
+      // on top of the terrain made a rim the player's feet clipped through on
+      // approach. Buried like the guardrail posts and palace walls, it reads as
+      // paving rather than a step.
+      const PAD_SHOW = 0.02
+      const PAD_THICK = 0.08
+      const RIM_SHOW = 0.01
+      const RIM_THICK = 0.06
+      const s = p.scale
       return (
-        <group position={pos} quaternion={quat} scale={p.scale}>
-          <mesh position={[0, thickness / 2, 0]} receiveShadow>
-            <cylinderGeometry args={[1, 1, thickness, 8]} />
+        <group position={pos} quaternion={quat} scale={s}>
+          <mesh position={[0, (PAD_SHOW - PAD_THICK / 2) / s, 0]} receiveShadow>
+            <cylinderGeometry args={[1, 1, PAD_THICK / s, 8]} />
             <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
           </mesh>
-          {/* rim, a touch wider and lower, reading as a kerb round the plot */}
-          <mesh position={[0, thickness / 4, 0]}>
-            <cylinderGeometry args={[1.06, 1.06, thickness / 2, 8]} />
+          {/* rim, a touch wider and a touch lower, reading as a kerb round the plot */}
+          <mesh position={[0, (RIM_SHOW - RIM_THICK / 2) / s, 0]}>
+            <cylinderGeometry args={[1.06, 1.06, RIM_THICK / s, 8]} />
             <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
           </mesh>
         </group>
