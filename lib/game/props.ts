@@ -58,6 +58,11 @@ export type PlacedProp = {
   aux?: [THREE.Vector3, THREE.Vector3]
   /** bilingual plate copy. Only "zone-signboard" uses this. */
   signText?: { kannada: string; english: string }
+  /**
+   * Half-width in world units. Bridge decks and rails carry it because an
+   * arterial crossing is wider than a local-road one; nothing else uses it.
+   */
+  width?: number
 }
 
 const PALETTE: Record<string, [string, string][]> = {
@@ -1046,6 +1051,16 @@ const BRIDGE_DECK_R = WATER_LEVEL + 0.96
  * the player walked off the deck edge before ever reaching a rail.
  */
 export const BRIDGE_HALF_WIDTH = 1.44
+/**
+ * An arterial crossing carries the full corridor cross-section, so its deck
+ * matches the surfaced half-width rather than the local-road default — a 1.44u
+ * deck under a 3.95u road pinches the carriageway to a third of its width at
+ * every water crossing. Local roads keep the narrow deck.
+ *
+ * Written out rather than read from FOOT_OUT, which the corridor section
+ * declares further down this file; the two must be kept in step by hand.
+ */
+export const BRIDGE_ARTERIAL_HALF_WIDTH = 3.95
 /** roughly one pier per this many world units of wet span */
 const PIER_SPACING = 2.4
 
@@ -1060,6 +1075,8 @@ export type BridgeSpan = {
   arc: number
   worldLength: number
   piers: number
+  /** deck half-width: arterial crossings are wider than local-road ones */
+  halfWidth: number
 }
 
 /** point on a road arc at angle `t` from `a`, toward `b` */
@@ -1106,7 +1123,15 @@ const BRIDGE_SPANS: BridgeSpan[] = (() => {
           const tA = Math.max(0, runStart - BRIDGE_RAMP)
           const tB = Math.min(omega, end + BRIDGE_RAMP)
           const worldLength = arc * BRIDGE_DECK_R
+          const [pa, pb] = ROAD_PAIRS[road]
+          // read off METRO_ZONE_IDS, not ARTERIAL_PAIRS: this runs at module
+          // load and ARTERIAL_PAIRS is declared further down the file
+          const arterial = METRO_ZONE_IDS.some((id, k) => {
+            const next = METRO_ZONE_IDS[(k + 1) % METRO_ZONE_IDS.length]
+            return (id === pa && next === pb) || (id === pb && next === pa)
+          })
           spans.push({
+            halfWidth: arterial ? BRIDGE_ARTERIAL_HALF_WIDTH : BRIDGE_HALF_WIDTH,
             road,
             t0: runStart,
             t1: end,
@@ -1198,14 +1223,15 @@ function placeBridges(props: PlacedProp[]) {
         colorA: deckA,
         colorB: deckB,
         seed: seed++,
+        width: span.halfWidth,
         aux: [p0.clone(), p1.clone()],
       })
 
       // a railing down each edge, offset across the deck
       const side = new THREE.Vector3(0, 0, 1).applyQuaternion(quat).normalize()
       for (const s of [-1, 1]) {
-        const r0 = p0.clone().addScaledVector(side, s * BRIDGE_HALF_WIDTH)
-        const r1 = p1.clone().addScaledVector(side, s * BRIDGE_HALF_WIDTH)
+        const r0 = p0.clone().addScaledVector(side, s * span.halfWidth)
+        const r1 = p1.clone().addScaledVector(side, s * span.halfWidth)
         const rMid = r0.clone().add(r1).multiplyScalar(0.5)
         props.push({
           kind: "bridge-rail",
@@ -1215,6 +1241,7 @@ function placeBridges(props: PlacedProp[]) {
           colorA: railA,
           colorB: railB,
           seed: seed++,
+          width: span.halfWidth,
           aux: [r0, r1],
         })
       }
@@ -1715,18 +1742,27 @@ export function arterialDistance(dir: THREE.Vector3) {
 
 const CORRIDOR_STEP = 0.015
 /** guardrails and tufts stand down inside this half-width; footpaths replace them */
-export const CORRIDOR_SUPPRESS = 2.9
+export const CORRIDOR_SUPPRESS = 4.15
 const ASPHALT_LIFT = 0.06
 const PAINT_LIFT = 0.08
 const MEDIAN_TOP = 0.2
 const FOOTPATH_TOP = 0.16
-/** carriageways span 0.3..2.0 either side: 1.7 wide, centred on 1.15 */
-const LANE_IN = 0.3
-const LANE_OUT = 2.0
-const LANE_MID = 1.15
-const MEDIAN_HALF = 0.25
-const FOOT_IN = 2.0
-const FOOT_OUT = 2.7
+/**
+ * Highway cross-section, half-widths from the centreline.
+ *
+ * The median widened from 0.25 to 0.50 because it never held what it was for:
+ * a pillar footing is 0.7 across and P35 measured every one of them spilling
+ * past the old edge into the carriageway. Carriageways then doubled to 2.6u so
+ * each side carries two lanes rather than one, which is what the dashed divider
+ * at LANE_MID now separates.
+ */
+const LANE_IN = 0.55
+const LANE_OUT = 3.15
+/** dashed divider between the two lanes of one carriageway */
+const LANE_MID = (LANE_IN + LANE_OUT) / 2
+const MEDIAN_HALF = 0.5
+const FOOT_IN = 3.15
+const FOOT_OUT = 3.95
 const MARK_HALF = 0.025
 const DASH_ON = 0.35
 const DASH_PERIOD = 0.8
@@ -1774,8 +1810,11 @@ const _footGap = new THREE.Vector3()
  * requirement: p90 = 0.46 rad, which is what this now allows.
  */
 const MAX_TWIST = 0.46
-/** the verge apron reaches this far out, blending the deck edge into the ground */
-const SKIRT_OUT = 3.3
+/**
+ * The verge apron reaches this far out, blending the deck edge into the ground.
+ * Held at 0.6u beyond the footpath, as it was before the widening.
+ */
+const SKIRT_OUT = FOOT_OUT + 0.6
 
 const CORRIDOR_COLORS = {
   asphalt: "#5a5a60",
@@ -2029,11 +2068,13 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
         const oR = Math.max(inner, outer)
         flat(asphalt, s0, s1, oL, oR, ASPHALT_LIFT)
 
-        // solid edge line on the outer edge
-        const edge = sign * (LANE_OUT - MARK_HALF * 2)
-        flat(paint, s0, s1, Math.min(edge, outer), Math.max(edge, outer), PAINT_LIFT)
+        // solid edge lines, one at each carriageway edge
+        const outerEdge = sign * (LANE_OUT - MARK_HALF * 2)
+        flat(paint, s0, s1, Math.min(outerEdge, outer), Math.max(outerEdge, outer), PAINT_LIFT)
+        const innerEdge = sign * (LANE_IN + MARK_HALF * 2)
+        flat(paint, s0, s1, Math.min(inner, innerEdge), Math.max(inner, innerEdge), PAINT_LIFT)
 
-        // dashed lane centre line
+        // dashed divider between this carriageway's two lanes
         const phase = s0.s % DASH_PERIOD
         if (phase < DASH_ON) {
           flat(
@@ -2341,8 +2382,7 @@ export function propCollision(
 
 /* ------------------------------------------------------- walkable bridges */
 
-/** the walkable surface runs right out to the railings */
-const DECK_HALF = BRIDGE_HALF_WIDTH
+/** the walkable surface runs right out to that span's own railings */
 /** the deck box is 0.2 thick and centred on the span height */
 const DECK_TOP = 0.1
 
@@ -2399,7 +2439,7 @@ export function bridgeSurface(dir: THREE.Vector3): number | null {
     const height = bridgeHeight(d.span, t, d.bankA, d.bankB)
     // lateral offset from the centreline, as a world distance at deck height
     const lateral = Math.abs(Math.asin(Math.max(-1, Math.min(1, dir.dot(d.n))))) * height
-    if (lateral > DECK_HALF) continue
+    if (lateral > d.span.halfWidth) continue
     const surface = height + DECK_TOP
     if (best === null || surface > best) best = surface
   }
