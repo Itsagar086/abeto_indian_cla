@@ -1655,6 +1655,34 @@ const PILLAR_CLEAR = 1.2
  * corner still creeps to 0.97u.
  */
 const MEDIAN_REACH = Math.hypot(MEDIAN_HALF, MEDIAN_TOP)
+/** half-width of a metro pillar's 0.7 x 0.7 footing box */
+const FOOTING_HALF = 0.35
+/**
+ * Skip a footing outright beyond this 3D range. Flattening onto the tangent
+ * plane discards radial separation, so without a real distance gate a footing on
+ * the far side of the planet reads as adjacent — the same trap P31 hit.
+ */
+const FOOTING_SKIP_SQ = (FOOTING_HALF + MEDIAN_REACH + PILLAR_CLEAR) ** 2
+/** half-step used for the central-difference tangent along the loop */
+const TANGENT_EPS = 0.004
+
+/**
+ * Gap between a point and a pillar footing, in the tangent plane at that point.
+ * 0 means the point is inside the box.
+ */
+function footingGap(
+  pt: THREE.Vector3,
+  up: THREE.Vector3,
+  f: { at: THREE.Vector3; axisX: THREE.Vector3; axisZ: THREE.Vector3 },
+) {
+  const d = _footGap.copy(pt).sub(f.at)
+  d.addScaledVector(up, -d.dot(up))
+  const ox = Math.max(0, Math.abs(d.dot(f.axisX)) - FOOTING_HALF)
+  const oz = Math.max(0, Math.abs(d.dot(f.axisZ)) - FOOTING_HALF)
+  return Math.hypot(ox, oz)
+}
+
+const _footGap = new THREE.Vector3()
 /**
  * Cross-slope clamp. The corridor is a graded roadway, not a terrain drape:
  * an edge may sit at most tan(this) x its lateral offset from the centreline
@@ -1753,36 +1781,68 @@ export type CorridorMesh = {
 
 /** the whole arterial cross-section, merged into one geometry per element */
 export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
-  const pillars = props.filter((p) => p.kind === "metro-pillar").map((p) => p.position)
   const out: CorridorMesh[] = []
+  // The corridor rides the metro's own spline, so it can only be built once the
+  // network exists. buildProps() lays the viaduct before this is ever called.
+  const net = NET
+  if (!net) return out
 
-  ARTERIAL_ARCS.forEach((arc, ai) => {
-    const steps = Math.max(2, Math.ceil(arc.omega / CORRIDOR_STEP))
+  const footings = props
+    .filter((p) => p.kind === "metro-pillar")
+    .map((p) => ({
+      at: p.position,
+      axisX: new THREE.Vector3(1, 0, 0).applyQuaternion(p.quaternion),
+      axisZ: new THREE.Vector3(0, 0, 1).applyQuaternion(p.quaternion),
+    }))
+
+  // Each arterial leg is the stretch of loop between the two stations that
+  // bracket it. stations[] is built in METRO_ORDER, the same order ARTERIAL_PAIRS
+  // derives from, and each carries its own arc-length position `t`.
+  const tOf = new Map(net.stations.map((s) => [s.zone, s.t]))
+
+  ARTERIAL_PAIRS.forEach(([idA, idB], ai) => {
+    const tA = tOf.get(idA)
+    const tB = tOf.get(idB)
+    if (tA === undefined || tB === undefined) return
+    // walk forward along the closed loop, wrapping at the seam
+    const span = (((tB - tA) % net.total) + net.total) % net.total
+    if (span < CORRIDOR_STEP) return
+
+    const steps = Math.max(2, Math.ceil(span / CORRIDOR_STEP))
     const samples: Sample[] = []
     const dir = new THREE.Vector3()
+    const ahead = new THREE.Vector3()
+    const behind = new THREE.Vector3()
     const fwd = new THREE.Vector3()
     let run = 0
 
     for (let i = 0; i <= steps; i++) {
-      const t = (i / steps) * arc.omega
-      const s = Math.sin(arc.omega)
-      dir
-        .copy(arc.a)
-        .multiplyScalar(Math.sin(arc.omega - t) / s)
-        .addScaledVector(arc.b, Math.sin(t) / s)
-        .normalize()
-      fwd.crossVectors(arc.n, dir).normalize()
+      const t = tA + (i / steps) * span
+      loopDir(t, dir)
+      // central difference for the tangent: the resampled loop is piecewise
+      // linear, and a one-sided difference kinks at every sample boundary
+      loopDir(t + TANGENT_EPS, ahead)
+      loopDir(t - TANGENT_EPS, behind)
+      fwd.copy(ahead).sub(behind)
+      fwd.addScaledVector(dir, -fwd.dot(dir))
+      if (fwd.lengthSq() < 1e-12) continue
+      fwd.normalize()
       const right = new THREE.Vector3().crossVectors(fwd, dir).normalize()
       const ground = terrainRadius(dir)
       const centre = dir.clone().multiplyScalar(ground)
+      // Break the median where a pillar's footing actually reaches into it,
+      // measured box-to-band the way every clearance test has since P29 — the
+      // old centre-distance test opened gaps for pillars nowhere near the strip
+      // and, once the two curves diverged, was aimed at the wrong place anyway.
       let medianOk = true
-      for (const p of pillars) {
-        if (centre.distanceTo(p) < PILLAR_CLEAR + MEDIAN_REACH) {
+      for (const f of footings) {
+        if (centre.distanceToSquared(f.at) > FOOTING_SKIP_SQ) continue
+        if (footingGap(centre, dir, f) < MEDIAN_HALF) {
           medianOk = false
           break
         }
       }
-      if (i > 0) run += (arc.omega / steps) * ground
+      if (i > 0) run += (span / steps) * ground
       samples.push({
         dir: dir.clone(),
         right,
