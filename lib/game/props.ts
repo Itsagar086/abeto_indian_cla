@@ -8,13 +8,13 @@ import {
   terrainRadius,
   terrainColor,
   npcSurfacePosition,
+  slopeAt,
 } from "./terrain"
 
 export type PropKind =
   | "stall"
   | "haveli-arch"
   | "palace"
-  | "temple-dome"
   | "mill-block"
   | "ghat-steps"
   | "mango-tree"
@@ -40,6 +40,7 @@ export type PropKind =
   | "temple-court"
   | "nandi-statue"
   | "temple-steps"
+  | "civic-pad"
 
 export type PlacedProp = {
   kind: PropKind
@@ -96,6 +97,9 @@ const KIND_COLORS: Partial<Record<PropKind, [string, string]>> = {
   "nandi-statue": ["#4a4442", "#4a4442"],
   "temple-court": ["#c9b48f", "#a89272"],
   "temple-steps": ["#c9b48f", "#a89272"],
+  // paver tone with a slightly darker rim, so a reserved plot reads as ground
+  // that has been claimed rather than as a building
+  "civic-pad": ["#cfc4ae", "#a4998a"],
 }
 
 /* ------------------------------------------------------------- namma metro */
@@ -246,7 +250,6 @@ const BULKY_KINDS = new Set<PropKind>([
   "palace",
   "mill-block",
   "workshop-shed",
-  "temple-dome",
   "ghat-steps",
   "mango-tree",
   "banyan",
@@ -1659,6 +1662,8 @@ export function buildProps(): PlacedProp[] {
   placeRoadFurniture(props)
   placeBridges(props)
   placeMetro(props)
+  // last, so a plot can see every pillar, building and villager it must avoid
+  placeCivicPads(props)
 
   return props
 }
@@ -2399,4 +2404,234 @@ export function bridgeSurface(dir: THREE.Vector3): number | null {
     if (best === null || surface > best) best = surface
   }
   return best
+}
+
+/* ------------------------------------------------------- civic plot reserve */
+
+export type CivicPlot = {
+  id: string
+  district: string
+  anchorZone: string
+  /**
+   * Intended centre. The placer nudges outward from here when the site does not
+   * clear everything already standing — the shift is reported, never silent.
+   */
+  dir: [number, number, number]
+  /**
+   * Size across, in world units — the same language P38's land survey used
+   * ("a 20u footprint"). The pad's disc radius is half this.
+   */
+  footprint: number
+}
+
+/**
+ * Reserved ground for buildings that do not exist yet. Each entry is a plot the
+ * zoning plan has claimed; the pad rendered on it is a marker, not a structure.
+ */
+export const CIVIC_PLOTS: CivicPlot[] = [
+  { id: "hospital", district: "civic", anchorZone: "haveli", dir: [-0.478, -0.018, 0.878], footprint: 14 },
+  { id: "college", district: "tech", anchorZone: "samadhi", dir: [0.824, -0.524, 0.218], footprint: 20 },
+  { id: "itpark", district: "tech", anchorZone: "samadhi", dir: [0.9201, -0.3883, 0.051], footprint: 20 },
+  { id: "apartments", district: "industrial", anchorZone: "mill", dir: [0.173, 0.512, -0.841], footprint: 20 },
+  { id: "park", district: "green", anchorZone: "grove", dir: [-0.663, -0.747, -0.049], footprint: 20 },
+  { id: "busstand", district: "transit", anchorZone: "bazaar", dir: [0.8613, 0.2795, -0.4244], footprint: 14 },
+  { id: "cycleshop", district: "service", anchorZone: "workshop", dir: [-0.8402, -0.5365, 0.0787], footprint: 10 },
+]
+
+/** clearances a reserved plot must keep, beyond its own radius */
+const PLOT_CORRIDOR = 3.3 + 0.6 // graded half-width, plus slack for spline-vs-arc
+const PLOT_PILLAR = 0.5
+const PLOT_BUILDING = 2
+const PLOT_NPC = 1.5
+const PLOT_PLOT = 2
+/**
+ * How far the search will walk from the intended centre, and in what rings.
+ * 34 rings reaches 51u: the tech district asks for two 20u plots near samadhi,
+ * and with 22u of mutual separation plus the corridor the second one has to
+ * travel to find room.
+ */
+const PLOT_RING = 1.5
+const PLOT_RINGS = 34
+/** ground under a plot may not tilt more than this */
+const PLOT_SLOPE = 0.3
+
+/** kinds that occupy ground a plot may not overlap. Verge scatter is not one. */
+const PLOT_BLOCKERS = new Set<PropKind>([
+  "palace", "gopuram", "temple-court", "nandi-statue", "temple-steps", "mill-block",
+  "workshop-shed", "stall", "market-umbrella", "haveli-arch", "banyan", "mango-tree",
+  "peepal-tree", "ghat-steps", "zone-signboard", "metro-station",
+])
+
+export type PlotSiting = {
+  id: string
+  district: string
+  anchorZone: string
+  dir: THREE.Vector3
+  radius: number
+  ground: number
+  band: number
+  slope: number
+  /** world units the placer had to walk from the requested centre */
+  shift: number
+  corridor: number
+  pillar: number
+  building: number
+  buildingWhat: string
+  npc: number
+  plot: number
+  ok: boolean
+}
+
+/** ground spread and wetness across a plot's disc */
+function plotRelief(dir: THREE.Vector3, radius: number) {
+  const r = terrainRadius(dir)
+  const t1 = (Math.abs(dir.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0))
+    .clone().cross(dir).normalize()
+  const t2 = new THREE.Vector3().crossVectors(dir, t1).normalize()
+  let lo = r, hi = r, wet = false
+  // rim and an inner ring, so a hump or hollow inside the disc is caught too
+  for (const frac of [1, 0.6]) {
+    for (let k = 0; k < 16; k++) {
+      const a = (k / 16) * Math.PI * 2
+      const p = dir.clone()
+        .addScaledVector(t1, (Math.cos(a) * radius * frac) / r)
+        .addScaledVector(t2, (Math.sin(a) * radius * frac) / r)
+        .normalize()
+      const pr = terrainRadius(p)
+      if (pr < WATER_LEVEL + 1) wet = true
+      lo = Math.min(lo, pr)
+      hi = Math.max(hi, pr)
+    }
+  }
+  return { r, band: hi - lo, wet }
+}
+
+/** every clearance a plot centre would have, negative meaning it overlaps */
+function plotClearances(
+  dir: THREE.Vector3,
+  radius: number,
+  placed: PlacedProp[],
+  pads: { dir: THREE.Vector3; radius: number }[],
+) {
+  const r = terrainRadius(dir)
+  const at = dir.clone().multiplyScalar(r)
+  const corridor = arterialDistance(dir) - PLOT_CORRIDOR - radius
+  let pillar = Infinity
+  let building = Infinity
+  let buildingWhat = "-"
+  for (const p of placed) {
+    if (p.kind === "metro-pillar") {
+      pillar = Math.min(pillar, at.distanceTo(p.position))
+    } else if (PLOT_BLOCKERS.has(p.kind)) {
+      const d = at.distanceTo(p.position)
+      if (d < building) {
+        building = d
+        buildingWhat = `${p.kind}(${p.seed})`
+      }
+    }
+  }
+  let npc = Infinity
+  for (const s of npcSpots()) npc = Math.min(npc, at.distanceTo(s))
+  let plot = Infinity
+  for (const o of pads) {
+    plot = Math.min(plot, o.dir.angleTo(dir) * r - o.radius - radius - PLOT_PLOT)
+  }
+  return {
+    corridor,
+    pillar: pillar - radius - PLOT_PILLAR,
+    building: building - radius - PLOT_BUILDING,
+    buildingWhat,
+    npc: npc - radius - PLOT_NPC,
+    plot,
+  }
+}
+
+/**
+ * Walk outward from the requested centre in rings until the whole disc sits on
+ * dry, gentle ground clear of the corridor, the viaduct, every building, every
+ * villager and every other plot.
+ */
+function siteCivicPlot(
+  want: THREE.Vector3,
+  radius: number,
+  placed: PlacedProp[],
+  pads: { dir: THREE.Vector3; radius: number }[],
+) {
+  const t1 = (Math.abs(want.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0))
+    .clone().cross(want).normalize()
+  const t2 = new THREE.Vector3().crossVectors(want, t1).normalize()
+  const base = terrainRadius(want)
+
+  for (let ring = 0; ring <= PLOT_RINGS; ring++) {
+    const out = ring * PLOT_RING
+    const steps = ring === 0 ? 1 : ring * 8
+    for (let k = 0; k < steps; k++) {
+      const a = (k / steps) * Math.PI * 2
+      const cand =
+        ring === 0
+          ? want.clone()
+          : want.clone()
+              .addScaledVector(t1, (Math.cos(a) * out) / base)
+              .addScaledVector(t2, (Math.sin(a) * out) / base)
+              .normalize()
+      const relief = plotRelief(cand, radius)
+      if (relief.wet) continue
+      if (slopeAt(cand, relief.r) > PLOT_SLOPE) continue
+      const c = plotClearances(cand, radius, placed, pads)
+      if (c.corridor < 0 || c.pillar < 0 || c.building < 0 || c.npc < 0 || c.plot < 0) continue
+      return { dir: cand, relief, clear: c, shift: want.angleTo(cand) * relief.r }
+    }
+  }
+  return null
+}
+
+let _plotSiting: PlotSiting[] = []
+
+/** the siting each plot ended up with, for reporting */
+export function civicPlotReport() {
+  return _plotSiting
+}
+
+/** reserve every civic plot as a visible pad */
+function placeCivicPads(props: PlacedProp[]) {
+  const [padA, padB] = KIND_COLORS["civic-pad"] ?? ["#cfc4ae", "#a89e90"]
+  const pads: { dir: THREE.Vector3; radius: number }[] = []
+  const report: PlotSiting[] = []
+  let seed = 9000
+
+  for (const plot of CIVIC_PLOTS) {
+    const radius = plot.footprint / 2
+    const want = new THREE.Vector3(...plot.dir).normalize()
+    const sited = siteCivicPlot(want, radius, props, pads)
+    if (!sited) {
+      report.push({
+        id: plot.id, district: plot.district, anchorZone: plot.anchorZone,
+        dir: want, radius, ground: terrainRadius(want), band: NaN, slope: NaN,
+        shift: NaN, corridor: NaN, pillar: NaN, building: NaN, buildingWhat: "-",
+        npc: NaN, plot: NaN, ok: false,
+      })
+      continue
+    }
+    pads.push({ dir: sited.dir, radius })
+    props.push({
+      kind: "civic-pad",
+      position: surfacePoint(sited.dir, 0),
+      quaternion: surfaceQuaternion(sited.dir, 0),
+      // the pad is a disc of this radius; the renderer divides its thickness
+      // back out so the slab stays 0.08u tall whatever the plot's size
+      scale: radius,
+      colorA: padA,
+      colorB: padB,
+      seed: seed++,
+    })
+    report.push({
+      id: plot.id, district: plot.district, anchorZone: plot.anchorZone,
+      dir: sited.dir, radius, ground: sited.relief.r, band: sited.relief.band,
+      slope: slopeAt(sited.dir, sited.relief.r), shift: sited.shift,
+      corridor: sited.clear.corridor, pillar: sited.clear.pillar,
+      building: sited.clear.building, buildingWhat: sited.clear.buildingWhat,
+      npc: sited.clear.npc, plot: sited.clear.plot, ok: true,
+    })
+  }
+  _plotSiting = report
 }

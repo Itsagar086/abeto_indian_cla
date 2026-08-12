@@ -91,6 +91,25 @@ function PropInstance({ p }: { p: PlacedProp }) {
   const quat = new THREE.Quaternion(p.quaternion.x, p.quaternion.y, p.quaternion.z, p.quaternion.w)
 
   switch (p.kind) {
+    case "civic-pad": {
+      // A reserved plot, not a building. p.scale carries the disc radius, so the
+      // slab's own thickness is divided back out to keep it 0.08u tall whatever
+      // the plot's size. No outline and no collision — it is ground, not an object.
+      const thickness = 0.08 / p.scale
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          <mesh position={[0, thickness / 2, 0]} receiveShadow>
+            <cylinderGeometry args={[1, 1, thickness, 8]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+          </mesh>
+          {/* rim, a touch wider and lower, reading as a kerb round the plot */}
+          <mesh position={[0, thickness / 4, 0]}>
+            <cylinderGeometry args={[1.06, 1.06, thickness / 2, 8]} />
+            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+          </mesh>
+        </group>
+      )
+    }
     case "stall":
       return (
         <group position={pos} quaternion={quat} scale={p.scale}>
@@ -248,36 +267,6 @@ function PropInstance({ p }: { p: PlacedProp }) {
             <cylinderGeometry args={[0.28, 0.28, 0.08, 16]} />
             <meshToonMaterial color="#2a2a2a" gradientMap={toonGradient} />
           </mesh>
-        </group>
-      )
-    case "temple-dome":
-      return (
-        <group position={pos} quaternion={quat} scale={p.scale}>
-          <mesh position={[0, 0.9, 0]} castShadow receiveShadow>
-            <cylinderGeometry args={[1.3, 1.5, 1.8, 8]} />
-            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
-            <Ink />
-          </mesh>
-          <mesh position={[0, 2.2, 0]} castShadow>
-            <coneGeometry args={[1.3, 1.4, 8]} />
-            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
-            <Ink />
-          </mesh>
-          <mesh position={[0, 3.05, 0]}>
-            <sphereGeometry args={[0.18, 12, 12]} />
-            <meshToonMaterial color="#f2d060" gradientMap={toonGradient} />
-            <Ink />
-          </mesh>
-          {[0, 1, 2, 3].map((i) => (
-            <mesh
-              key={i}
-              position={[Math.cos((i / 4) * Math.PI * 2) * 1.3, 0.9, Math.sin((i / 4) * Math.PI * 2) * 1.3]}
-            >
-              <boxGeometry args={[0.15, 1.6, 0.15]} />
-              <meshToonMaterial color="#f2e6c8" gradientMap={toonGradient} />
-              <Ink />
-            </mesh>
-          ))}
         </group>
       )
     case "ghat-steps":
