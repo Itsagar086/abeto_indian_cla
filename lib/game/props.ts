@@ -162,6 +162,12 @@ export const METRO_TOUR_LENGTH = (() => {
 /* ------------------------------------------------------------ deck profile */
 
 const DECK_SAMPLE = 0.02
+/**
+ * Spacing of the extra spline controls seeded along each leg's great circle.
+ * It trades two things off against each other: smaller hugs the arc more
+ * tightly, larger rounds the corner at each hub more generously.
+ */
+const CONTROL_STEP = 0.12
 const DECK_SMOOTH = 7
 const DECK_RISE = 8
 const DECK_MIN_CLEAR = 6.4
@@ -386,17 +392,23 @@ function advance(from: THREE.Vector3, toward: THREE.Vector3, angle: number) {
  * lands on a building, a road ribbon or in the water it slides along the loop
  * until it is clear.
  */
-function siteStations(placed: PlacedProp[]) {
-  const sites: { dir: THREE.Vector3; info: StationInfo }[] = []
+function siteStations(
+  placed: PlacedProp[],
+  /** samples the finished loop by arc length — stations ride the curve now */
+  onLoop: (t: number, target: THREE.Vector3) => THREE.Vector3,
+  /** arc-length position of each zone centre along that loop, in METRO_ORDER */
+  zoneT: number[],
+  total: number,
+) {
+  const sites: { dir: THREE.Vector3; info: StationInfo; t: number }[] = []
   const n = METRO_ORDER.length
+  const _stationV = new THREE.Vector3()
 
   for (let i = 0; i < n; i++) {
     const zi = METRO_ORDER[i]
-    const zoneDir = ZONE_DIRS[zi]
-    const nextDir = ZONE_DIRS[METRO_ORDER[(i + 1) % n]]
     // never lead more than 40% of the way to the next zone: on the short
     // beach->temple leg a flat 0.3 rad would land in the temple's own props
-    const legLength = zoneDir.angleTo(nextDir)
+    const legLength = (((zoneT[(i + 1) % n] - zoneT[i]) % total) + total) % total
     const lead = Math.min(STATION_LEAD, 0.4 * legLength)
 
     const offsets: number[] = [0]
@@ -419,7 +431,10 @@ function siteStations(placed: PlacedProp[]) {
 
     for (let pass = 1; pass <= 3 && !chosen; pass++) {
       for (const off of offsets) {
-        const dir = advance(zoneDir, nextDir, lead + off)
+        // read the candidate off the loop instead of walking the great circle:
+        // the curve is now anchored on the zone centres, so a station placed by
+        // arc length lands exactly on the track it is meant to serve
+        const dir = onLoop(zoneT[i] + lead + off, _stationV).clone()
         const ground = terrainRadius(dir)
         if (ground < WATER_LEVEL + 0.48) continue
         if (pass === 1 && roadDistance(dir) < RIBBON_CLEAR) continue
@@ -446,17 +461,21 @@ function siteStations(placed: PlacedProp[]) {
       chosenPass = 4
     }
     if (!chosen) {
-      chosen = advance(zoneDir, nextDir, lead)
+      chosen = onLoop(zoneT[i] + lead, _stationV).clone()
       chosenPass = 5
     }
 
+    // the station's own arc position: where it actually sits on the loop, which
+    // is now simply where it was sampled from
+    const t = (((zoneT[i] + lead + chosenOffset) % total) + total) % total
     sites.push({
       dir: chosen,
+      t,
       info: {
         zone: ZONES[zi].id,
         offset: chosenOffset,
         clearance: chosenClear,
-        t: 0,
+        t,
         pass: chosenPass,
       },
     })
@@ -467,10 +486,47 @@ function siteStations(placed: PlacedProp[]) {
 /* ------------------------------------------------------------- loop + deck */
 
 function buildNetwork(placed: PlacedProp[]): MetroNet {
-  const sites = siteStations(placed)
-  const controls = sites.map((s) => s.dir)
+  /**
+   * Closed spline through the ZONE CENTRES, in tour order, resampled to even arc
+   * steps. It used to be threaded through the station directions instead, which
+   * sit ~0.3 rad along each leg — so the curve never passed through a zone at
+   * all, and once buildCorridors began following it (P36) the road inherited
+   * that drift and wandered up to 13u from the hubs it connects. Anchoring on
+   * the zones puts the track, the road, the painted ribbon and the terrain
+   * grading back on the same zone-to-zone route; stations are then sited along
+   * this curve rather than defining it.
+   *
+   * The nine zone centres alone are not enough: a Catmull-Rom through points
+   * that far apart bows away from the geodesic between them, which measured
+   * 1.39u median / 3.10u worst off the road arcs and left the loop 19% longer
+   * than the tour it represents. Each leg is therefore also seeded with control
+   * points sampled along its own great circle, so the curve hugs the arc between
+   * hubs and only rounds the corner at each one.
+   */
+  const controls: THREE.Vector3[] = []
+  /** index into `controls` of each zone centre, in METRO_ORDER */
+  const zoneControl: number[] = []
+  for (let i = 0; i < METRO_ORDER.length; i++) {
+    const a = ZONE_DIRS[METRO_ORDER[i]]
+    const b = ZONE_DIRS[METRO_ORDER[(i + 1) % METRO_ORDER.length]]
+    const om = a.angleTo(b)
+    const sin = Math.sin(om)
+    zoneControl.push(controls.length)
+    const k = Math.max(1, Math.round(om / CONTROL_STEP))
+    for (let j = 0; j < k; j++) {
+      const t = (j / k) * om
+      controls.push(
+        sin < 1e-9
+          ? a.clone()
+          : a
+              .clone()
+              .multiplyScalar(Math.sin(om - t) / sin)
+              .addScaledVector(b, Math.sin(t) / sin)
+              .normalize(),
+      )
+    }
+  }
 
-  // closed spline through the station directions, resampled to even arc steps
   const curve = new THREE.CatmullRomCurve3(
     controls.map((d) => d.clone()),
     true,
@@ -534,12 +590,20 @@ function buildNetwork(placed: PlacedProp[]): MetroNet {
     }
   }
 
-  // arc position of each station: the spline passes through control k at u=k/K
+  // Arc position of each zone centre: the closed spline passes through control
+  // k at u = k/K, so sample j = k/K * M is that control, and cum[j] its length.
   const K = controls.length
-  const stations = sites.map((s, k) => {
-    const j = Math.min(M, Math.round((k / K) * M))
-    return { ...s.info, t: cum[j] }
-  })
+  const zoneT = zoneControl.map((k) => cum[Math.min(M, Math.round((k / K) * M))])
+
+  // Stations ride the finished curve. They are sited only now, because the
+  // curve no longer depends on them — the dependency used to run the other way.
+  const sites = siteStations(
+    placed,
+    (t, target) => sampleLoopDirs(dirs, n, step, t, target),
+    zoneT,
+    total,
+  )
+  const stations = sites.map((s) => s.info)
 
   const legs = buildSchedule(stations, total)
   const cycle = legs.length ? legs[legs.length - 1].end : 1
@@ -630,9 +694,18 @@ export function metroStats() {
 }
 
 /** unit direction on the loop at arc parameter t */
-export function loopDir(t: number, target: THREE.Vector3) {
-  if (!NET) return target.set(0, 1, 0)
-  const { dirs, n, step } = NET
+/**
+ * Direction at arc length `t` on a resampled loop. Split out from loopDir so
+ * station siting can read the curve while it is still being built, before NET
+ * exists — the two must sample identically or a station drifts off its track.
+ */
+function sampleLoopDirs(
+  dirs: Float64Array,
+  n: number,
+  step: number,
+  t: number,
+  target: THREE.Vector3,
+) {
   let x = t / step
   x = ((x % n) + n) % n
   const i = Math.floor(x)
@@ -644,6 +717,11 @@ export function loopDir(t: number, target: THREE.Vector3) {
     dirs[i * 3 + 2] + (dirs[j * 3 + 2] - dirs[i * 3 + 2]) * f,
   )
   return target.normalize()
+}
+
+export function loopDir(t: number, target: THREE.Vector3) {
+  if (!NET) return target.set(0, 1, 0)
+  return sampleLoopDirs(NET.dirs, NET.n, NET.step, t, target)
 }
 
 /** deck radius at arc parameter t */
