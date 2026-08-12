@@ -183,9 +183,14 @@ export function terrainRadius(dir: THREE.Vector3) {
   const x = dir.x
   const y = dir.y
   const z = dir.z
-  // large rolling lumps + fine crunch, flattened along the roads
+  // large rolling lumps + fine crunch, flattened along the roads.
+  // The ramp back to full noise was 0.15 -> 1 over road 1..1.9, which packed the
+  // whole amplitude change into ~1.1 world units and stood a wall of artificial
+  // cross-slope along every verge: it drove the corridor punch-through and the
+  // brown rock stripes flanking the roads. Widened to 1..2.6 with a higher floor,
+  // which is the same suppression spread thin enough to read as a graded shoulder.
   const road = roadDistance(dir)
-  const flat = road < 1 ? 0.15 : road < 1.9 ? 0.15 + 0.85 * ((road - 1) / 0.9) : 1
+  const flat = road < 1 ? 0.28 : road < 2.6 ? 0.28 + 0.72 * ((road - 1) / 1.6) : 1
   const lumps = fbm(x * 5.1, y * 5.1, z * 5.1, 3) * 2.16
   const detail = fbm(x * 15.3, y * 15.3, z * 15.3, 3) * 0.672
   const ridges =
