@@ -6,6 +6,7 @@ import { Outlines } from "@react-three/drei"
 import * as THREE from "three"
 import { NPCS, PHYSICS, INITIAL_CHARACTER, ZONES } from "@/lib/game/data"
 import { npcSurfacePosition, terrainRadius } from "@/lib/game/terrain"
+import { propCollision, bridgeSurface, type PropHit } from "@/lib/game/props"
 import { useGameStore } from "@/lib/game/store"
 import { playerState } from "@/lib/game/playerState"
 import { toonGradient } from "@/lib/game/toon"
@@ -35,6 +36,36 @@ const CAM_MIN_DIST = 2.08
 /** pull in fast when the view is blocked, ease back out slowly */
 const CAM_LOS_IN_LERP = 0.4
 const CAM_LOS_OUT_LERP = 0.08
+
+/**
+ * The player as a standing capsule: the kurta is a 0.25 capsule and the satchel
+ * juts a little further, so 0.34 wraps the silhouette. Height covers feet to the
+ * top of the head.
+ */
+const PLAYER_RADIUS = 0.34
+const PLAYER_HEIGHT = 1.8
+/**
+ * Resolve passes per frame. One is enough in the open; a second and third let
+ * the player settle cleanly into an inside corner instead of jittering between
+ * two walls that each push them back into the other.
+ */
+const COLLIDE_PASSES = 3
+/**
+ * Ceiling on how far collision may shift the player in one frame, across all
+ * passes. A walk step is 0.154u, so a correction under this is indistinguishable
+ * from ordinary movement; without it, a first contact resolves its whole depth
+ * at once and reads as a shove. Anything deeper settles over the next frames.
+ */
+const MAX_PUSH = 0.15
+/**
+ * How far the player may be below a bridge deck and still be caught by it.
+ * The ramps meet the bank terrain exactly, so this only has to absorb a frame
+ * of downhill travel — large enough and you would get snapped up from the water.
+ */
+const DECK_SNAP = 0.4
+
+/** scratch for the collision work — the resolve loop allocates nothing */
+const _hit: PropHit = { normal: new THREE.Vector3(), depth: 0 }
 
 /** scratch for the camera work — keeps the frame allocation-free */
 const _camDir = new THREE.Vector3()
@@ -166,10 +197,29 @@ export function Player() {
     velocity.current.copy(tangent).addScaledVector(up, newRadial)
     position.current.addScaledVector(velocity.current, dt60)
 
-    // ground collision against the analytic terrain surface
+    // solid props: push out of whatever this step walked into, and drop the
+    // velocity heading into it, so the player slides along a wall rather than
+    // stopping dead against it
+    let pushLeft = MAX_PUSH
+    for (let pass = 0; pass < COLLIDE_PASSES && pushLeft > 0; pass++) {
+      if (!propCollision(position.current, PLAYER_RADIUS, PLAYER_HEIGHT, _hit)) break
+      const push = Math.min(_hit.depth, pushLeft)
+      position.current.addScaledVector(_hit.normal, push)
+      pushLeft -= push
+      // drop the velocity heading into the face even when the push was capped,
+      // so the player stops pressing deeper while the overlap works itself out
+      const into = velocity.current.dot(_hit.normal)
+      if (into < 0) velocity.current.addScaledVector(_hit.normal, -into)
+    }
+
+    // ground collision: the terrain, or a bridge deck where one is overhead
     const dir = position.current.clone().normalize()
-    const groundR = terrainRadius(dir)
     const r = position.current.length()
+    let groundR = terrainRadius(dir)
+    const deckR = bridgeSurface(dir)
+    // stand on a deck only when already at or above it — walking underneath a
+    // bridge must not snatch the player up onto it
+    if (deckR !== null && deckR > groundR && r >= deckR - DECK_SNAP) groundR = deckR
     if (r <= groundR) {
       position.current.copy(dir.multiplyScalar(groundR))
       grounded.current = true

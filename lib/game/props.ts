@@ -170,6 +170,19 @@ const DECK_WATER = WATER_LEVEL + 4.8
 const DECK_MAX_STEP = 0.4
 
 const PILLAR_STEP = 0.075
+/** slide offsets tried when a footing lands on a villager, nearest first */
+const PILLAR_NUDGES = [0.01, -0.01, 0.02, -0.02, 0.03, -0.03]
+/**
+ * Reaching past a temple approach cone can need more room than stepping off a
+ * villager does — a cone is 4u across — so that case gets a longer window. It is
+ * kept separate rather than widening the list above, because a longer window
+ * also rescues footings that P24 deliberately skipped, and that would add
+ * pillars and shift every downstream seed for no sightline gain. Every value
+ * stays under PILLAR_STEP so a footing never walks onto the next one's ground.
+ */
+const PILLAR_NUDGES_WIDE = [
+  ...PILLAR_NUDGES, 0.04, -0.04, 0.05, -0.05, 0.06, -0.06,
+]
 
 /* ---------------------------------------------------------- station siting */
 
@@ -236,6 +249,57 @@ const BULKY_KINDS = new Set<PropKind>([
 ])
 
 /**
+ * Ground-footprint half-extents [x, z] in local units, before the prop's own
+ * `scale`, measured off the geometry in PropsLayer. Only kinds listed here are
+ * re-sited away from the arterial corridors; adding a kind opts it in.
+ *
+ * palace        corner-tower cones reach x +-1.67, entrance face z -0.66
+ * workshop-shed the roof cone is a 4-gon spun PI/4, so its vertices sit at 1.6
+ */
+const FOOTPRINT: Partial<Record<PropKind, [number, number]>> = {
+  palace: [1.67, 0.66],
+  "workshop-shed": [1.6, 1.6],
+}
+
+/** perimeter samples per box edge when testing a footprint against a corridor */
+const FOOT_SAMPLES = 8
+const _footV = new THREE.Vector3()
+
+/**
+ * Does this footprint clear every corridor, testing the box outline rather than
+ * the centre? A circumscribed radius is not enough: corridors converge at each
+ * zone centre, and in that wedge the distance field bends enough that a centre
+ * measuring 4.64u clear still had a corner 2.24u in.
+ */
+function footprintClear(dir: THREE.Vector3, box: [number, number], scale: number, spin: number) {
+  const quat = surfaceQuaternion(dir, spin)
+  const origin = surfacePoint(dir, 0)
+  const [hx, hz] = box
+  for (let e = 0; e < 4; e++) {
+    for (let i = 0; i <= FOOT_SAMPLES; i++) {
+      const t = (i / FOOT_SAMPLES) * 2 - 1
+      if (e === 0) _footV.set(t * hx, 0, hz)
+      else if (e === 1) _footV.set(t * hx, 0, -hz)
+      else if (e === 2) _footV.set(hx, 0, t * hz)
+      else _footV.set(-hx, 0, t * hz)
+      _footV.multiplyScalar(scale).applyQuaternion(quat).add(origin).normalize()
+      if (arterialDistance(_footV) < FOOT_OUT) return false
+    }
+  }
+  return true
+}
+
+/** how far out the corridor search will walk, and in what increments */
+const SITE_DIST_STEP = 0.25
+const SITE_MAX_DIST = 12
+/** bearings tried at each distance: authored first, then alternating outward */
+const SITE_TURNS = (() => {
+  const turns = [0]
+  for (let i = 1; i <= 16; i++) turns.push((i * Math.PI) / 16, (-i * Math.PI) / 16)
+  return turns
+})()
+
+/**
  * Where the villagers actually stand. Structures must not be dropped on top of
  * them: an NPC is person-sized, so the small-prop rule applies. Built lazily so
  * it never runs before terrain.ts has finished initialising.
@@ -267,6 +331,47 @@ function propClearance(pos: THREE.Vector3, placed: PlacedProp[]) {
     if (d < (BULKY_KINDS.has(p.kind) ? CLEAR_BIG : CLEAR_SMALL)) ok = false
   }
   return { ok, nearest }
+}
+
+/** structures whose entrance must keep a clear view down its own approach */
+const SIGHTLINE_KINDS = new Set<PropKind>(["gopuram", "temple-court"])
+/** how far down the approach the view is protected, and the cone's half-angle */
+const SIGHTLINE_REACH = 4
+const SIGHTLINE_HALF = Math.PI / 4
+
+type Sightline = { at: THREE.Vector3; up: THREE.Vector3; face: THREE.Vector3 }
+
+/**
+ * The approach cones in front of the temple entrances. aimAtZone (P19) put each
+ * doorway on local -Z, so that axis carried through the prop's own quaternion is
+ * the direction the entrance looks — outward from the summit, down the stepped
+ * climb. Reading it back off the quaternion rather than recomputing the tangent
+ * keeps this true to however the piece was actually aimed.
+ */
+function sightlines(placed: PlacedProp[]): Sightline[] {
+  const out: Sightline[] = []
+  for (const p of placed) {
+    if (!SIGHTLINE_KINDS.has(p.kind)) continue
+    const up = p.position.clone().normalize()
+    const face = new THREE.Vector3(0, 0, -1).applyQuaternion(p.quaternion)
+    face.addScaledVector(up, -face.dot(up)) // flatten onto the ground plane
+    if (face.lengthSq() < 1e-10) continue
+    out.push({ at: p.position.clone(), up, face: face.normalize() })
+  }
+  return out
+}
+
+/** does `spot` stand inside a protected approach cone? */
+function blocksSightline(spot: THREE.Vector3, lines: Sightline[]) {
+  const limit = Math.cos(SIGHTLINE_HALF)
+  for (const s of lines) {
+    const v = spot.clone().sub(s.at)
+    v.addScaledVector(s.up, -v.dot(s.up))
+    const d = v.length()
+    if (d < 1e-6 || d > SIGHTLINE_REACH) continue
+    if (v.divideScalar(d).dot(s.face) >= limit) return true
+  }
+  return false
 }
 
 /** rotate `from` toward `toward` by `angle` radians along their great circle */
@@ -614,6 +719,9 @@ function placeMetro(props: PlacedProp[]) {
   const dir = new THREE.Vector3()
   let seed = 1500
 
+  // the temple props are already in `props` by the time the viaduct is laid
+  const lines = sightlines(props)
+
   const steps = Math.max(8, Math.round(net.total / PILLAR_STEP))
   const step = net.total / steps
   for (let i = 0; i < steps; i++) {
@@ -623,12 +731,15 @@ function placeMetro(props: PlacedProp[]) {
     if (nominalGround < WATER_LEVEL + 0.48) continue
 
     let t = nominal
-    if (!npcClearance(dir.clone().multiplyScalar(nominalGround)).ok) {
-      // Only a footing that would land on a villager slides, and only to a spot
-      // that is dry, clear of villagers, and not on top of a prop — nudging
-      // blindly once put a pillar 0.07u into the temple steps.
+    const nominalSpot = dir.clone().multiplyScalar(nominalGround)
+    const coned = blocksSightline(nominalSpot, lines)
+    if (!npcClearance(nominalSpot).ok || coned) {
+      // A footing slides if it would land on a villager or inside a temple
+      // approach cone, and only to a spot that is dry, clear of villagers, not
+      // on top of a prop — nudging blindly once put a pillar 0.07u into the
+      // temple steps — and not itself in a cone.
       let moved = false
-      for (const nudge of [0.01, -0.01, 0.02, -0.02, 0.03, -0.03]) {
+      for (const nudge of coned ? PILLAR_NUDGES_WIDE : PILLAR_NUDGES) {
         const probe = nominal + nudge
         loopDir(probe, dir)
         const g = terrainRadius(dir)
@@ -636,6 +747,7 @@ function placeMetro(props: PlacedProp[]) {
         const spot = dir.clone().multiplyScalar(g)
         if (!npcClearance(spot).ok) continue
         if (propClearance(spot, props).nearest < CLEAR_SMALL) continue
+        if (blocksSightline(spot, lines)) continue
         t = probe
         moved = true
         break
@@ -827,7 +939,13 @@ const MIN_SPAN = 0.03
 /** ramp length at each bank, in radians */
 const BRIDGE_RAMP = 0.04
 const BRIDGE_DECK_R = WATER_LEVEL + 0.96
-const BRIDGE_HALF_WIDTH = 1.44
+/**
+ * Half the bridge, from centreline to railing. The deck mesh, the railings and
+ * the walkable surface all derive from this one number: they were three separate
+ * literals, and the deck had drifted to 0.9 while the rails stood at 1.44, so
+ * the player walked off the deck edge before ever reaching a rail.
+ */
+export const BRIDGE_HALF_WIDTH = 1.44
 /** roughly one pier per this many world units of wet span */
 const PIER_SPACING = 2.4
 
@@ -1279,17 +1397,18 @@ export function buildProps(): PlacedProp[] {
     const t1 = new THREE.Vector3().crossVectors(tangent, center).normalize()
     const t2 = new THREE.Vector3().crossVectors(center, t1).normalize()
     const ang = angleOffset
-    const at = (df: number) => {
+    const atAng = (a: number, df: number) => {
       // a pure angular offset in radians. zone.radius is a world-unit value and
       // must never enter here — multiplying by it flung props tens of degrees
       // away from the zone they belong to (BUG-102).
       const dist = df * 0.03125
       return center
         .clone()
-        .addScaledVector(t1, Math.cos(ang) * dist)
-        .addScaledVector(t2, Math.sin(ang) * dist)
+        .addScaledVector(t1, Math.cos(a) * dist)
+        .addScaledVector(t2, Math.sin(a) * dist)
         .normalize()
     }
+    const at = (df: number) => atAng(ang, df)
 
     let dir = at(distFrac)
     if (npcAware && !npcClearance(surfacePoint(dir, 0)).ok) {
@@ -1300,6 +1419,52 @@ export function buildProps(): PlacedProp[] {
           break
         }
       }
+    }
+
+    // Corridor siting. An arterial runs through every metro zone's centre, so a
+    // structure anchored near that centre sits in the carriageway. Anything with
+    // a FOOTPRINT must stand its own radius clear of the corridor's outer edge.
+    //
+    // Unlike the npc nudge above this also sweeps the bearing: the workshop shed
+    // is on the same bearing as a corridor, so no distance along it ever escapes.
+    // Distance-major ordering keeps the authored bearing when it can work and
+    // otherwise takes the nearest site that clears, so props stay in their zone.
+    const box = FOOTPRINT[kind]
+    if (box !== undefined && !footprintClear(dir, box, scale, ang + Math.PI)) {
+      const fits = (cand: THREE.Vector3) => {
+        // cheap gate first: the centre lies inside the box, so a centre inside
+        // the band can never yield a clear footprint, and this skips the
+        // perimeter walk for the great majority of candidates
+        if (arterialDistance(cand) < FOOT_OUT) return false
+        const spot = surfacePoint(cand, 0)
+        // the same two conditions add() already enforces on every prop
+        if (spot.length() < WATER_LEVEL + 0.48) return false
+        if (!npcClearance(spot).ok) return false
+        return footprintClear(cand, box, scale, ang + Math.PI)
+      }
+
+      let sited: THREE.Vector3 | null = null
+      // Hold the authored bearing and walk outward first. Ensembles are composed
+      // along one bearing — the palace gate sits on the palace's, deliberately —
+      // so keeping it is worth the extra 1.0u this costs the palace.
+      for (let df = distFrac; df <= SITE_MAX_DIST && !sited; df += SITE_DIST_STEP) {
+        const cand = at(df)
+        if (fits(cand)) sited = cand
+      }
+      // Only if the bearing itself runs down a corridor, as the workshop shed's
+      // does for its whole length, sweep round. Distance-major, so the shed stays
+      // as close as it can to the smallest zone on the planet.
+      if (!sited) {
+        search: for (let df = distFrac; df <= SITE_MAX_DIST; df += SITE_DIST_STEP) {
+          for (const turn of SITE_TURNS) {
+            const cand = atAng(ang + turn, df)
+            if (!fits(cand)) continue
+            sited = cand
+            break search
+          }
+        }
+      }
+      if (sited) dir = sited
     }
 
     const pos = surfacePoint(dir, 0)
@@ -1752,4 +1917,307 @@ export function corridorStats(meshes: CorridorMesh[]) {
     verts += m.geometry.getAttribute("position").count
   }
   return { meshes: meshes.length, tris, verts }
+}
+
+/* --------------------------------------------- player collision (read-only) */
+
+/**
+ * Solid props, with a crude stand-in for each one's shape, read off the geometry
+ * in PropsLayer. Deliberately simple: the player is a capsule and this only has
+ * to stop them walking through a wall, so a box or a cylinder per kind is
+ * enough. `top` is height above the prop's own base.
+ */
+type ColliderSpec =
+  | { shape: "box"; hx: number; hz: number; top: number }
+  /** an opening between uprights, so the player can walk through the gate */
+  | { shape: "posts"; xs: number[]; r: number; top: number }
+  /** vertical, spanning aux[0] (base) to aux[1] (top) */
+  | { shape: "shaft"; r: number }
+  /** horizontal, following aux[0] -> aux[1] */
+  | { shape: "rail"; r: number; top: number }
+
+const COLLIDER_SPECS: Partial<Record<PropKind, ColliderSpec>> = {
+  palace: { shape: "box", hx: 1.57, hz: 0.6, top: 2.35 },
+  gopuram: { shape: "box", hx: 0.8, hz: 0.8, top: 3.04 },
+  "temple-court": { shape: "box", hx: 1.3, hz: 1.1, top: 1.2 },
+  "mill-block": { shape: "box", hx: 1.1, hz: 0.9, top: 2.2 },
+  "workshop-shed": { shape: "box", hx: 1.0, hz: 0.8, top: 1.5 },
+  stall: { shape: "box", hx: 0.55, hz: 0.4, top: 1.1 },
+  // uprights at +-0.9 rather than one slab: this is a gateway on the palace
+  // approach and sealing it would wall off the thing it leads to
+  "haveli-arch": { shape: "posts", xs: [-0.9, 0.9], r: 0.25, top: 2.8 },
+  "metro-pillar": { shape: "shaft", r: 0.42 },
+  "bridge-pier": { shape: "shaft", r: 0.16 },
+  "bridge-rail": { shape: "rail", r: 0.12, top: 0.5 },
+}
+
+type Collider = {
+  at: THREE.Vector3
+  /** broad-phase radius about `at` */
+  bound: number
+  /** the band of world radii this thing occupies */
+  r0: number
+  r1: number
+  form: "circle" | "box" | "segment"
+  rad: number
+  axisX: THREE.Vector3
+  axisZ: THREE.Vector3
+  hx: number
+  hz: number
+  end: THREE.Vector3
+}
+
+const _zeroAxis = new THREE.Vector3()
+
+function makeCollider(
+  form: Collider["form"],
+  at: THREE.Vector3,
+  r0: number,
+  r1: number,
+  bound: number,
+  extra: Partial<Collider> = {},
+): Collider {
+  return {
+    at,
+    bound,
+    r0,
+    r1,
+    form,
+    rad: 0,
+    axisX: _zeroAxis,
+    axisZ: _zeroAxis,
+    hx: 0,
+    hz: 0,
+    end: at,
+    ...extra,
+  }
+}
+
+let _colliders: Collider[] | null = null
+let _cachedProps: PlacedProp[] | null = null
+
+/** buildProps is not cheap; the collision tables want it once, not per query */
+function cachedProps() {
+  if (!_cachedProps) _cachedProps = buildProps()
+  return _cachedProps
+}
+
+function colliders(): Collider[] {
+  if (_colliders) return _colliders
+  const out: Collider[] = []
+  for (const p of cachedProps()) {
+    const spec = COLLIDER_SPECS[p.kind]
+    if (!spec) continue
+    const base = p.position.length()
+
+    if (spec.shape === "box") {
+      const hx = spec.hx * p.scale
+      const hz = spec.hz * p.scale
+      out.push(
+        makeCollider("box", p.position, base - 0.5, base + spec.top * p.scale, Math.hypot(hx, hz), {
+          axisX: new THREE.Vector3(1, 0, 0).applyQuaternion(p.quaternion),
+          axisZ: new THREE.Vector3(0, 0, 1).applyQuaternion(p.quaternion),
+          hx,
+          hz,
+        }),
+      )
+    } else if (spec.shape === "posts") {
+      const axisX = new THREE.Vector3(1, 0, 0).applyQuaternion(p.quaternion)
+      const rad = spec.r * p.scale
+      for (const x of spec.xs) {
+        const at = p.position.clone().addScaledVector(axisX, x * p.scale)
+        out.push(makeCollider("circle", at, base - 0.5, base + spec.top * p.scale, rad, { rad }))
+      }
+    } else if (spec.shape === "shaft") {
+      if (!p.aux) continue
+      const rad = spec.r * p.scale
+      out.push(makeCollider("circle", p.aux[0], p.aux[0].length(), p.aux[1].length(), rad, { rad }))
+    } else {
+      if (!p.aux) continue
+      const [a, b] = p.aux
+      const rad = spec.r * p.scale
+      const lo = Math.min(a.length(), b.length())
+      const hi = Math.max(a.length(), b.length())
+      out.push(
+        makeCollider("segment", a, lo - 0.05, hi + spec.top * p.scale, a.distanceTo(b) + rad, {
+          rad,
+          end: b,
+        }),
+      )
+    }
+  }
+  _colliders = out
+  return out
+}
+
+/** how many colliders are live, and of which kinds — for reporting */
+export function colliderStats() {
+  const byKind = new Map<string, number>()
+  for (const p of cachedProps()) {
+    if (COLLIDER_SPECS[p.kind]) byKind.set(p.kind, (byKind.get(p.kind) ?? 0) + 1)
+  }
+  return { total: colliders().length, byKind: [...byKind.entries()].sort() }
+}
+
+export type PropHit = { normal: THREE.Vector3; depth: number }
+
+const _pcUp = new THREE.Vector3()
+const _pcDelta = new THREE.Vector3()
+const _pcOff = new THREE.Vector3()
+const _pcSeg = new THREE.Vector3()
+
+/**
+ * Deepest overlap between a standing capsule at `pos` and any solid prop.
+ * `normal` comes back tangent to the sphere and pointing away from the
+ * obstacle, so the caller can push out along it and keep sliding.
+ */
+export function propCollision(
+  pos: THREE.Vector3,
+  radius: number,
+  height: number,
+  hit: PropHit,
+): boolean {
+  const r = pos.length()
+  if (r < 1e-6) return false
+  _pcUp.copy(pos).divideScalar(r)
+  let found = false
+  hit.depth = 0
+
+  for (const c of colliders()) {
+    // the vertical bands must overlap: nothing you stand on top of, or walk
+    // underneath, should stop you
+    if (r + height <= c.r0 || r >= c.r1) continue
+
+    // Reject in full 3D first. Flattening onto the tangent plane below throws
+    // away radial separation, which on a sphere makes anything directly above,
+    // below or antipodal look like it is standing right next to you — a rail on
+    // the far side of the planet was registering as a hit.
+    if (c.form === "segment") {
+      _pcSeg.copy(c.end).sub(c.at)
+      const len2 = _pcSeg.lengthSq()
+      _pcDelta.copy(pos).sub(c.at)
+      const t = len2 < 1e-12 ? 0 : Math.max(0, Math.min(1, _pcDelta.dot(_pcSeg) / len2))
+      _pcDelta.addScaledVector(_pcSeg, -t)
+      const reach = radius + c.rad
+      if (_pcDelta.lengthSq() > reach * reach) continue
+    } else {
+      _pcDelta.copy(pos).sub(c.at)
+      // +1 of slack so a step of terrain between player and prop base cannot
+      // reject a contact that is genuinely there
+      const reach = c.bound + radius + 1
+      if (_pcDelta.lengthSq() > reach * reach) continue
+    }
+    // now measure in the tangent plane, so nothing pushes the player up or down
+    _pcDelta.addScaledVector(_pcUp, -_pcDelta.dot(_pcUp))
+
+    let depth: number
+    if (c.form === "box") {
+      const lx = _pcDelta.dot(c.axisX)
+      const lz = _pcDelta.dot(c.axisZ)
+      const cx = Math.max(-c.hx, Math.min(c.hx, lx))
+      const cz = Math.max(-c.hz, Math.min(c.hz, lz))
+      let ox = lx - cx
+      let oz = lz - cz
+      const d = Math.hypot(ox, oz)
+      if (d > radius) continue
+      if (d < 1e-6) {
+        // dead inside the box: leave by whichever face is nearest
+        if (c.hx - Math.abs(lx) < c.hz - Math.abs(lz)) {
+          ox = lx >= 0 ? 1 : -1
+          oz = 0
+          depth = radius + c.hx - Math.abs(lx)
+        } else {
+          ox = 0
+          oz = lz >= 0 ? 1 : -1
+          depth = radius + c.hz - Math.abs(lz)
+        }
+        _pcOff.copy(c.axisX).multiplyScalar(ox).addScaledVector(c.axisZ, oz)
+      } else {
+        depth = radius - d
+        _pcOff.copy(c.axisX).multiplyScalar(ox / d).addScaledVector(c.axisZ, oz / d)
+      }
+    } else {
+      const d = _pcDelta.length()
+      const reach = radius + c.rad
+      if (d > reach) continue
+      if (d < 1e-6) continue // exactly on the axis: no usable push direction
+      depth = reach - d
+      _pcOff.copy(_pcDelta).divideScalar(d)
+    }
+
+    if (depth <= hit.depth) continue
+    _pcOff.addScaledVector(_pcUp, -_pcOff.dot(_pcUp))
+    if (_pcOff.lengthSq() < 1e-12) continue
+    hit.normal.copy(_pcOff).normalize()
+    hit.depth = depth
+    found = true
+  }
+  return found
+}
+
+/* ------------------------------------------------------- walkable bridges */
+
+/** the walkable surface runs right out to the railings */
+const DECK_HALF = BRIDGE_HALF_WIDTH
+/** the deck box is 0.2 thick and centred on the span height */
+const DECK_TOP = 0.1
+
+type DeckSpan = {
+  span: BridgeSpan
+  a: THREE.Vector3
+  n: THREE.Vector3
+  /** in-plane perpendicular to `a`, pointing toward b */
+  perp: THREE.Vector3
+  bankA: number
+  bankB: number
+}
+
+let _decks: DeckSpan[] | null = null
+
+function decks(): DeckSpan[] {
+  if (_decks) return _decks
+  const byId = new Map(ZONES.map((z) => [z.id, z]))
+  const out: DeckSpan[] = []
+  const probe = new THREE.Vector3()
+  for (const span of BRIDGE_SPANS) {
+    const [idA, idB] = ROAD_PAIRS[span.road]
+    const za = byId.get(idA)
+    const zb = byId.get(idB)
+    if (!za || !zb) continue
+    const a = new THREE.Vector3(...za.center).normalize()
+    const b = new THREE.Vector3(...zb.center).normalize()
+    const omega = a.angleTo(b)
+    const perp = b.clone().addScaledVector(a, -a.dot(b))
+    if (perp.lengthSq() < 1e-12) continue
+    out.push({
+      span,
+      a,
+      n: new THREE.Vector3().crossVectors(a, b).normalize(),
+      perp: perp.normalize(),
+      bankA: terrainRadius(arcPoint(a, b, omega, span.tA, probe)),
+      bankB: terrainRadius(arcPoint(a, b, omega, span.tB, probe)),
+    })
+  }
+  _decks = out
+  return out
+}
+
+/**
+ * Radius of the walkable bridge surface beneath `dir`, or null where there is
+ * no deck. Ramps are included, and at a ramp's foot the deck height equals the
+ * bank terrain, so walking on is continuous rather than a step up.
+ */
+export function bridgeSurface(dir: THREE.Vector3): number | null {
+  let best: number | null = null
+  for (const d of decks()) {
+    const t = Math.atan2(dir.dot(d.perp), dir.dot(d.a))
+    if (t < d.span.tA || t > d.span.tB) continue
+    const height = bridgeHeight(d.span, t, d.bankA, d.bankB)
+    // lateral offset from the centreline, as a world distance at deck height
+    const lateral = Math.abs(Math.asin(Math.max(-1, Math.min(1, dir.dot(d.n))))) * height
+    if (lateral > DECK_HALF) continue
+    const surface = height + DECK_TOP
+    if (best === null || surface > best) best = surface
+  }
+  return best
 }

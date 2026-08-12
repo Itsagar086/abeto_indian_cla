@@ -9,6 +9,7 @@ import {
   buildCorridors,
   deckPoint,
   metroTrainState,
+  BRIDGE_HALF_WIDTH,
   type CorridorMesh,
   type PlacedProp,
 } from "@/lib/game/props"
@@ -628,13 +629,13 @@ function PropInstance({ p }: { p: PlacedProp }) {
       return (
         <group position={pos} quaternion={quat} scale={p.scale}>
           <mesh castShadow receiveShadow>
-            <boxGeometry args={[span, 0.2, 1.8]} />
+            <boxGeometry args={[span, 0.2, BRIDGE_HALF_WIDTH * 2]} />
             <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
             <Ink />
           </mesh>
-          {/* darker kerb line under the deck edge */}
+          {/* darker kerb line under the deck edge, inset 0.075 either side */}
           <mesh position={[0, -0.12, 0]}>
-            <boxGeometry args={[span, 0.06, 1.65]} />
+            <boxGeometry args={[span, 0.06, BRIDGE_HALF_WIDTH * 2 - 0.15]} />
             <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
           </mesh>
         </group>
