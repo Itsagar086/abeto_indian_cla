@@ -10,6 +10,8 @@ import {
   deckPoint,
   metroTrainState,
   BRIDGE_HALF_WIDTH,
+  GUARD_SHOW,
+  GUARD_ROOT,
   type CorridorMesh,
   type PlacedProp,
 } from "@/lib/game/props"
@@ -383,7 +385,12 @@ function PropInstance({ p }: { p: PlacedProp }) {
             <meshToonMaterial color="#4f7a34" gradientMap={toonGradient} />
             <Ink />
           </mesh>
-          <mesh position={[0.1, 0.05, 0.1]}>
+          {/* the stone marker at the foot of the tree. It was a 0.5 cube centred
+              at y +0.05 and pushed 0.1 off the trunk, which at this zone's 1.4
+              scale left a 0.7u block standing 0.5u proud of the grass and clear
+              of the trunk — the pale box in the screenshot. Sunk and re-centred
+              so it reads as a stone set at the roots. */}
+          <mesh position={[0, -0.15, 0]}>
             <boxGeometry args={[0.5, 0.5, 0.5]} />
             <meshToonMaterial color="#c9b48f" gradientMap={toonGradient} />
             <Ink />
@@ -423,24 +430,43 @@ function PropInstance({ p }: { p: PlacedProp }) {
           </mesh>
         </group>
       )
-    case "guardrail":
+    case "guardrail": {
       // posts are 0.05 across and the rail 0.05 deep — all too thin to ink
+      if (!p.aux) return null
+      // aux carries the ground under each post. Bring both into the prop's own
+      // frame: local +Y is the radial up, so each foot's y is how much higher or
+      // lower its ground sits than the rail's centre.
+      const inv = quat.clone().invert()
+      const origin = new THREE.Vector3(...pos)
+      const lf = p.aux.map((w) => w.clone().sub(origin).applyQuaternion(inv))
+      const [l, r] = lf
+      // each post stands upright from its own ground, showing the same height,
+      // and the rail runs from one top to the other — down the grade, not level
+      const dx = r.x - l.x
+      const dy = r.y - l.y
       return (
         <group position={pos} quaternion={quat} scale={p.scale}>
-          {/* posts run 1.0 long centred at -0.15, so 0.65 is buried and only
-              0.35 shows — the verge is too uneven for a surface-sitting post */}
-          {[-0.4, 0.4].map((x, i) => (
-            <mesh key={i} position={[x, -0.15, 0]} castShadow>
-              <cylinderGeometry args={[0.025, 0.025, 1, 6]} />
+          {lf.map((f, i) => (
+            <mesh
+              key={i}
+              position={[f.x, f.y + (GUARD_SHOW - GUARD_ROOT) / 2, f.z]}
+              castShadow
+            >
+              <cylinderGeometry args={[0.025, 0.025, GUARD_SHOW + GUARD_ROOT, 6]} />
               <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
             </mesh>
           ))}
-          <mesh position={[0, 0.3, 0]} castShadow>
-            <boxGeometry args={[0.9, 0.08, 0.05]} />
+          <mesh
+            position={[(l.x + r.x) / 2, (l.y + r.y) / 2 + GUARD_SHOW, (l.z + r.z) / 2]}
+            rotation={[0, 0, Math.atan2(dy, dx)]}
+            castShadow
+          >
+            <boxGeometry args={[Math.hypot(dx, dy) + 0.1, 0.08, 0.05]} />
             <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
           </mesh>
         </group>
       )
+    }
     case "utility-pole":
       // 0.06 across — no outline
       return (

@@ -825,6 +825,13 @@ function paletteFor(zoneId: string, r: () => number): [string, string] {
  * The same zone pairs buildRoads() arcs between in terrain.ts. Re-declared here
  * rather than imported because that list is module-private there; if it ever
  * changes, this must change with it.
+ *
+ * It did change and this did not: P28 added the last four to complete the
+ * arterial loop, and because bridges, road furniture and signposts all walk this
+ * list, those roads got none of it — including two that cross open water, which
+ * left the roads running straight into Sampangi Kere and the grove channel with
+ * no deck. Keep the order identical to terrain.ts: signboards pick a road with
+ * find(), so reordering would re-site them.
  */
 export const ROAD_PAIRS: [string, string][] = [
   ["bazaar", "beach"],
@@ -838,9 +845,21 @@ export const ROAD_PAIRS: [string, string][] = [
   ["haveli", "bazaar"],
   ["haveli", "grove"],
   ["bazaar", "ghat"],
+  ["samadhi", "grove"],
+  ["haveli", "workshop"],
+  ["workshop", "beach"],
+  ["temple", "mill"],
 ]
 
 const ROAD_STEP = 0.06
+/**
+ * Guardrail post spacing either side of the rail centre, and how much of a post
+ * shows above its own ground. Shared with PropsLayer, which builds the rail from
+ * the two ground samples in `aux`.
+ */
+export const GUARD_POST_X = 0.4
+export const GUARD_SHOW = 0.35
+export const GUARD_ROOT = 0.65
 const RAIL_OFFSET = 0.055
 const POLE_OFFSET = 0.07
 /** minimum roadDistance any furniture must keep from every road ribbon */
@@ -1184,6 +1203,18 @@ function placeRoadFurniture(props: PlacedProp[]) {
         colorA,
         colorB,
         seed: seed++,
+      }
+      // A guardrail spans 0.8u between its posts, and the verge can drop most of
+      // a unit across that — a rail held level then reads as a leaning fence with
+      // one post barely showing. Sample the ground under each post so the
+      // renderer can stand both upright and run the rail down the grade.
+      if (kind === "guardrail") {
+        const axisX = new THREE.Vector3(1, 0, 0).applyQuaternion(prop.quaternion)
+        const foot = (sx: number) => {
+          const probe = dir.clone().addScaledVector(axisX, sx / pos.length()).normalize()
+          return probe.multiplyScalar(terrainRadius(probe))
+        }
+        prop.aux = [foot(-GUARD_POST_X), foot(GUARD_POST_X)]
       }
       props.push(prop)
       return prop
@@ -1949,6 +1980,16 @@ const COLLIDER_SPECS: Partial<Record<PropKind, ColliderSpec>> = {
   "metro-pillar": { shape: "shaft", r: 0.42 },
   "bridge-pier": { shape: "shaft", r: 0.16 },
   "bridge-rail": { shape: "rail", r: 0.12, top: 0.5 },
+  // Trees stop you at the trunk, not the canopy — a single upright, using the
+  // cylinder's wider bottom radius. Walking under a mango's foliage is fine;
+  // walking through its bole is not. The banyan's aerial roots are left open,
+  // so the grove stays a place you can wander into.
+  "mango-tree": { shape: "posts", xs: [0], r: 0.14, top: 1.2 },
+  banyan: { shape: "posts", xs: [0], r: 0.45, top: 1.6 },
+  "peepal-tree": { shape: "posts", xs: [0], r: 0.26, top: 1.8 },
+  // guardrails carry the ground under each post in aux since P33, which is the
+  // same two-point form bridge-rail already uses
+  guardrail: { shape: "rail", r: 0.12, top: GUARD_SHOW },
 }
 
 type Collider = {
