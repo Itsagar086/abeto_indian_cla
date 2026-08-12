@@ -1,6 +1,13 @@
 import * as THREE from "three"
-import { ZONES, WATER_LEVEL } from "./data"
-import { surfacePoint, surfaceQuaternion, rng, roadDistance, terrainRadius } from "./terrain"
+import { ZONES, NPCS, WATER_LEVEL } from "./data"
+import {
+  surfacePoint,
+  surfaceQuaternion,
+  rng,
+  roadDistance,
+  terrainRadius,
+  npcSurfacePosition,
+} from "./terrain"
 
 export type PropKind =
   | "stall"
@@ -227,6 +234,27 @@ const BULKY_KINDS = new Set<PropKind>([
   "zone-signboard",
 ])
 
+/**
+ * Where the villagers actually stand. Structures must not be dropped on top of
+ * them: an NPC is person-sized, so the small-prop rule applies. Built lazily so
+ * it never runs before terrain.ts has finished initialising.
+ */
+let _npcSpots: THREE.Vector3[] | null = null
+function npcSpots() {
+  if (!_npcSpots) _npcSpots = NPCS.map((n) => npcSurfacePosition(n.position))
+  return _npcSpots
+}
+
+/** distance from `pos` to the nearest villager, and whether it clears */
+function npcClearance(pos: THREE.Vector3) {
+  let nearest = Infinity
+  for (const p of npcSpots()) {
+    const d = pos.distanceTo(p)
+    if (d < nearest) nearest = d
+  }
+  return { ok: nearest >= CLEAR_SMALL, nearest }
+}
+
 /** smallest distance from `pos` to any already-placed prop, and whether it clears */
 function propClearance(pos: THREE.Vector3, placed: PlacedProp[]) {
   let nearest = Infinity
@@ -290,7 +318,10 @@ function siteStations(placed: PlacedProp[]) {
         if (ground < WATER_LEVEL + 0.48) continue
         if (pass === 1 && roadDistance(dir) < RIBBON_CLEAR) continue
         const pos = dir.clone().multiplyScalar(ground)
-        const { ok, nearest } = propClearance(pos, placed)
+        const prop = propClearance(pos, placed)
+        const npc = npcClearance(pos)
+        const ok = prop.ok && npc.ok
+        const nearest = Math.min(prop.nearest, npc.nearest)
         if (!best || nearest > best.clear) best = { dir, off, clear: nearest }
         if (ok) {
           chosen = dir
@@ -585,10 +616,35 @@ function placeMetro(props: PlacedProp[]) {
   const steps = Math.max(8, Math.round(net.total / PILLAR_STEP))
   const step = net.total / steps
   for (let i = 0; i < steps; i++) {
-    const t = i * step
+    const nominal = i * step
+    loopDir(nominal, dir)
+    const nominalGround = terrainRadius(dir)
+    if (nominalGround < WATER_LEVEL + 0.48) continue
+
+    let t = nominal
+    if (!npcClearance(dir.clone().multiplyScalar(nominalGround)).ok) {
+      // Only a footing that would land on a villager slides, and only to a spot
+      // that is dry, clear of villagers, and not on top of a prop — nudging
+      // blindly once put a pillar 0.07u into the temple steps.
+      let moved = false
+      for (const nudge of [0.01, -0.01, 0.02, -0.02, 0.03, -0.03]) {
+        const probe = nominal + nudge
+        loopDir(probe, dir)
+        const g = terrainRadius(dir)
+        if (g < WATER_LEVEL + 0.48) continue
+        const spot = dir.clone().multiplyScalar(g)
+        if (!npcClearance(spot).ok) continue
+        if (propClearance(spot, props).nearest < CLEAR_SMALL) continue
+        t = probe
+        moved = true
+        break
+      }
+      // nowhere clear in the window: leave the gap, the deck spans it
+      if (!moved) continue
+    }
+
     loopDir(t, dir)
     const ground = terrainRadius(dir)
-    if (ground < WATER_LEVEL + 0.48) continue
     const base = dir.clone().multiplyScalar(ground)
     const top = dir.clone().multiplyScalar(deckRadius(t))
     const ahead = new THREE.Vector3()
@@ -1211,6 +1267,8 @@ export function buildProps(): PlacedProp[] {
     distFrac: number,
     scale: number,
     seed: number,
+    /** slide outward/inward if the authored spot would land on a villager */
+    npcAware = false,
   ) => {
     const zone = byId.get(zoneId)
     if (!zone) return
@@ -1220,15 +1278,29 @@ export function buildProps(): PlacedProp[] {
     const t1 = new THREE.Vector3().crossVectors(tangent, center).normalize()
     const t2 = new THREE.Vector3().crossVectors(center, t1).normalize()
     const ang = angleOffset
-    // a pure angular offset in radians. zone.radius is a world-unit value and
-    // must never enter here — multiplying by it flung props tens of degrees
-    // away from the zone they belong to (BUG-102).
-    const dist = distFrac * 0.03125
-    const dir = center
-      .clone()
-      .addScaledVector(t1, Math.cos(ang) * dist)
-      .addScaledVector(t2, Math.sin(ang) * dist)
-      .normalize()
+    const at = (df: number) => {
+      // a pure angular offset in radians. zone.radius is a world-unit value and
+      // must never enter here — multiplying by it flung props tens of degrees
+      // away from the zone they belong to (BUG-102).
+      const dist = df * 0.03125
+      return center
+        .clone()
+        .addScaledVector(t1, Math.cos(ang) * dist)
+        .addScaledVector(t2, Math.sin(ang) * dist)
+        .normalize()
+    }
+
+    let dir = at(distFrac)
+    if (npcAware && !npcClearance(surfacePoint(dir, 0)).ok) {
+      for (const nudge of [0.15, -0.15, 0.3, -0.3, 0.45, -0.45, 0.6, -0.6]) {
+        const cand = at(distFrac + nudge)
+        if (npcClearance(surfacePoint(cand, 0)).ok) {
+          dir = cand
+          break
+        }
+      }
+    }
+
     const pos = surfacePoint(dir, 0)
     const quat = surfaceQuaternion(dir, ang + Math.PI)
     const [a, b] = KIND_COLORS[kind] ?? paletteFor(zoneId, rng(seed))
@@ -1247,7 +1319,7 @@ export function buildProps(): PlacedProp[] {
   add("flag", "bazaar", 1.0, 0.3, 1, 152)
 
   // --- haveli: Bengaluru Palace behind a gated approach, all on one bearing
-  add("palace", "haveli", 0, 0.3, 1.6, 300)
+  add("palace", "haveli", 0, 0.3, 1.6, 300, true)
   // gate on the SAME bearing (angle 0) as the palace, nearer and deliberately
   // shorter than its towers, with the lamps flanking the approach
   add("haveli-arch", "haveli", 0, 1.1, 1.0, 301)
@@ -1267,17 +1339,19 @@ export function buildProps(): PlacedProp[] {
 
   // --- temple: a South Indian hill shrine — gopuram at the summit, courtyard
   // and Nandi on the approach, stair runs descending the slope below
-  add("gopuram", "temple", 0, 0.25, 1.6, 600)
+  add("gopuram", "temple", 0, 0.25, 1.6, 600, true)
   aimAtZone(props, "temple", "z") // doorway (local -Z) looks down the approach
-  add("temple-court", "temple", 0, 0.55, 1.4, 601)
+  add("temple-court", "temple", 0, 0.55, 1.4, 601, true)
   aimAtZone(props, "temple", "z") // mandapa roof (+Z half) sits toward the shrine
-  add("nandi-statue", "temple", 0, 0.85, 1.1, 602)
+  add("nandi-statue", "temple", 0, 0.85, 1.1, 602, true)
   aimAtZone(props, "temple", "x") // the bull faces the shrine along local +X
   add("temple-steps", "temple", 0, 1.25, 1.3, 603)
   aimAtZone(props, "temple", "z") // treads descend along local -Z, downhill
-  // a run is 3.12u long and one distFrac unit here is 1.55u, so the second run
-  // starts ~2.0 distFrac beyond the first rather than inside it
-  add("temple-steps", "temple", 0, 3.3, 1.3, 604)
+  // A run is 3.12u long and the second must start beyond the first. 3.3 was
+  // tuned when distFrac scaled by 0.05; P22b changed that to 0.03125, pulling
+  // this run back into a roadside guardrail. 3.3 x 1.6 restores its world
+  // position under the new scale.
+  add("temple-steps", "temple", 0, 5.3, 1.3, 604)
   aimAtZone(props, "temple", "z")
   // distFrac 1.3 clears the gopuram's 1.28u half-width, but the approach axis
   // is fully occupied (court 0.85, Nandi 1.32, steps 1.94), so the flags are
