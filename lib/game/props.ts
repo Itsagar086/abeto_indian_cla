@@ -1985,16 +1985,34 @@ function rollingMax(src: number[], w: number) {
  * The window is sampled past both ends of the leg so neighbouring legs smooth
  * into each other and no crease forms at a station.
  */
+/**
+ * The envelope may stand at most this far above the local mean ground. Uncapped
+ * it reached 5.8u — wall-like causeways over every hollow. Capped, deep dips
+ * are followed at the terrain's macro shape instead of being spanned.
+ */
+const MAX_FILL = 1.2
+/** half-window of the mean ground the cap is measured against (~3.6u) */
+const CAP_SMOOTH = 6
+/**
+ * Half-window of the final blend that removes the crease where cap meets
+ * envelope (~3u). 3 left a 0.08 grade-change kink at hollow rims and two extra
+ * crest/sag reversals; 5 restores the envelope's reversal count exactly, for
+ * 0.08u of extra fill at the worst hollow.
+ */
+const CAP_BLEND = 5
+
 function corridorProfile(tA: number, span: number, steps: number) {
-  const pad = CORRIDOR_SMOOTH * 2
+  const pad = CORRIDOR_SMOOTH * 2 + CAP_BLEND
   const probe = new THREE.Vector3()
   const raw: number[] = []
   for (let i = -pad; i <= steps + pad; i++) {
     loopDir(tA + (i / steps) * span, probe)
     raw.push(terrainRadius(probe))
   }
-  const envelope = rollingMax(raw, CORRIDOR_SMOOTH)
-  const ridden = runningMean(envelope, CORRIDOR_SMOOTH)
+  const envelope = runningMean(rollingMax(raw, CORRIDOR_SMOOTH), CORRIDOR_SMOOTH)
+  const ceiling = runningMean(raw, CAP_SMOOTH)
+  const capped = envelope.map((v, i) => Math.min(v, ceiling[i] + MAX_FILL))
+  const ridden = runningMean(capped, CAP_BLEND)
   return ridden.slice(pad, pad + steps + 1)
 }
 
