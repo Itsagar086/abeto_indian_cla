@@ -297,7 +297,10 @@ function footprintClear(dir: THREE.Vector3, box: [number, number], scale: number
       else if (e === 2) _footV.set(hx, 0, t * hz)
       else _footV.set(-hx, 0, t * hz)
       _footV.multiplyScalar(scale).applyQuaternion(quat).add(origin).normalize()
-      if (arterialDistance(_footV) < FOOT_OUT) return false
+      // SKIRT_OUT, not FOOT_OUT: a building standing in the graded apron is a
+      // building the road has cut the ground out from under. Read inside the
+      // function, so the corridor section declaring it further down is fine.
+      if (arterialDistance(_footV) < SKIRT_OUT) return false
     }
   }
   return true
@@ -1574,7 +1577,7 @@ export function buildProps(): PlacedProp[] {
         // cheap gate first: the centre lies inside the box, so a centre inside
         // the band can never yield a clear footprint, and this skips the
         // perimeter walk for the great majority of candidates
-        if (arterialDistance(cand) < FOOT_OUT) return false
+        if (arterialDistance(cand) < SKIRT_OUT) return false
         const spot = surfacePoint(cand, 0)
         // the same two conditions add() already enforces on every prop
         if (spot.length() < WATER_LEVEL + 0.48) return false
@@ -1750,9 +1753,11 @@ const FOOTPATH_TOP = 0.16
 /**
  * Highway cross-section, half-widths from the centreline.
  *
- * The median widened from 0.25 to 0.50 because it never held what it was for:
+ * The median widened from 0.25 to 0.55 because it never held what it was for:
  * a pillar footing is 0.7 across and P35 measured every one of them spilling
- * past the old edge into the carriageway. Carriageways then doubled to 2.6u so
+ * past the old edge into the carriageway. 0.50 contained them but only by 12mm
+ * at worst — a footing turned toward 45 degrees reaches 0.495u — so it carries
+ * 0.55 to leave the margin a real one. Carriageways then doubled to 2.6u so
  * each side carries two lanes rather than one, which is what the dashed divider
  * at LANE_MID now separates.
  */
@@ -1760,7 +1765,7 @@ const LANE_IN = 0.55
 const LANE_OUT = 3.15
 /** dashed divider between the two lanes of one carriageway */
 const LANE_MID = (LANE_IN + LANE_OUT) / 2
-const MEDIAN_HALF = 0.5
+const MEDIAN_HALF = 0.55
 const FOOT_IN = 3.15
 const FOOT_OUT = 3.95
 const MARK_HALF = 0.025
@@ -2479,7 +2484,12 @@ export const CIVIC_PLOTS: CivicPlot[] = [
 ]
 
 /** clearances a reserved plot must keep, beyond its own radius */
-const PLOT_CORRIDOR = 3.3 + 0.6 // graded half-width, plus slack for spline-vs-arc
+/**
+ * Plot setback from the corridor centreline: the graded half-width at the
+ * highway cross-section (4.55u) plus slack for the spline-vs-arc gap that
+ * arterialDistance leaves. Was 3.9 against the old 5.4u road.
+ */
+const PLOT_CORRIDOR = 4.55 + 0.65
 const PLOT_PILLAR = 0.5
 const PLOT_BUILDING = 2
 const PLOT_NPC = 1.5
