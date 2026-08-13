@@ -5,7 +5,8 @@ import * as THREE from "three"
 import { Html, Outlines } from "@react-three/drei"
 import { useFrame } from "@react-three/fiber"
 import { NPCS, type Npc } from "@/lib/game/data"
-import { npcSurfacePosition, surfaceQuaternion, terrainRadius } from "@/lib/game/terrain"
+import { surfaceQuaternion, terrainRadius } from "@/lib/game/terrain"
+import { groundOrDeck } from "@/lib/game/props"
 import { useGameStore, useNpcHasQuest } from "@/lib/game/store"
 import { toonGradient } from "@/lib/game/toon"
 
@@ -20,7 +21,13 @@ const _samplePos = new THREE.Vector3()
 const _sampleDir = new THREE.Vector3()
 
 function NpcFigure({ npc }: { npc: Npc }) {
-  const pos = npcSurfacePosition(npc.position)
+  // stand on the road where one covers this spot: the corridor deck is smoothed
+  // and filled over hollows, so raw terrain can sit most of a unit below it and
+  // a villager placed there is buried to the knees in asphalt
+  const pos = useMemo(() => {
+    const d = new THREE.Vector3(...npc.position).normalize()
+    return d.clone().multiplyScalar(groundOrDeck(d))
+  }, [npc.position])
   const up = pos.clone().normalize()
   const quat = surfaceQuaternion(up, 0)
   const hasQuest = useNpcHasQuest(npc.id)

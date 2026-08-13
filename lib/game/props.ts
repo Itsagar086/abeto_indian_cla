@@ -2749,3 +2749,147 @@ function placeCivicPads(props: PlacedProp[]) {
   }
   _plotSiting = report
 }
+
+/* ------------------------------------------------- what you stand on */
+
+type RideSample = {
+  dir: THREE.Vector3
+  right: THREE.Vector3
+  /** the smoothed deck height, straight out of corridorProfile */
+  ground: number
+  dry: boolean
+  /** which arterial this belongs to; neighbours are only neighbours within one */
+  leg: number
+}
+
+let _ride: RideSample[] | null = null
+
+/**
+ * Centreline samples of every arterial, carrying the same smoothed profile the
+ * corridor mesh is built from. Built once, from corridorProfile — the smoothing
+ * lives in one place and this only reads it.
+ */
+function rideSamples(): RideSample[] {
+  if (_ride) return _ride
+  // guarantees the metro network exists, which is what the legs are cut from
+  cachedProps()
+  const net = NET
+  const out: RideSample[] = []
+  if (!net) return out
+  const tOf = new Map(net.stations.map((s) => [s.zone, s.t]))
+  const dir = new THREE.Vector3()
+  const ahead = new THREE.Vector3()
+  const behind = new THREE.Vector3()
+  const fwd = new THREE.Vector3()
+
+  ARTERIAL_PAIRS.forEach(([idA, idB], leg) => {
+    const tA = tOf.get(idA)
+    const tB = tOf.get(idB)
+    if (tA === undefined || tB === undefined) return
+    const span = (((tB - tA) % net.total) + net.total) % net.total
+    if (span < CORRIDOR_STEP) return
+    const steps = Math.max(2, Math.ceil(span / CORRIDOR_STEP))
+    const profile = corridorProfile(tA, span, steps)
+
+    for (let i = 0; i <= steps; i++) {
+      const t = tA + (i / steps) * span
+      loopDir(t, dir)
+      loopDir(t + TANGENT_EPS, ahead)
+      loopDir(t - TANGENT_EPS, behind)
+      fwd.copy(ahead).sub(behind)
+      fwd.addScaledVector(dir, -fwd.dot(dir))
+      if (fwd.lengthSq() < 1e-12) continue
+      fwd.normalize()
+      const right = new THREE.Vector3().crossVectors(fwd, dir).normalize()
+      const ground = profile[i]
+      // the same water test buildCorridors uses, against the real ground: where
+      // it fails no corridor was built and the bridges take over
+      const wet = terrainRadius(dir)
+      const dry =
+        wet >= WATER_LEVEL + 0.48 &&
+        terrainRadius(dir.clone().addScaledVector(right, FOOT_OUT / ground).normalize()) >=
+          WATER_LEVEL + 0.48 &&
+        terrainRadius(dir.clone().addScaledVector(right, -FOOT_OUT / ground).normalize()) >=
+          WATER_LEVEL + 0.48
+      out.push({ dir: dir.clone(), right, ground, dry, leg })
+    }
+  })
+  _ride = out
+  return out
+}
+
+const _rideProbe = new THREE.Vector3()
+
+/**
+ * How far in from the outer footpath edge the ride height blends back down to
+ * the real ground. Without it the corridor simply stops: the surface is a lift
+ * above graded ground on one side of the line and raw terrain on the other, and
+ * crossing it snapped the player that whole distance in a single frame — worst
+ * near the zone hubs, where the walk weaves in and out of the footprint dozens
+ * of times a leg. Tapering costs a sink of at most FOOTPATH_TOP across the
+ * outermost half-unit of a 7.9u road, and makes the seam continuous by
+ * construction rather than by smoothing after the fact.
+ */
+const RIDE_TAPER = 0.5
+
+/**
+ * Height of the road surface under `dir`, or null off the corridor.
+ *
+ * The corridor is not one height: the deck is smoothed along its length, but
+ * across its width MAX_TWIST ties each edge back toward the real ground, and the
+ * footpath stands proud of the carriageway. This walks the same cross-section
+ * the mesh is built from, so what you stand on is what you see.
+ */
+export function corridorSurface(dir: THREE.Vector3): number | null {
+  const samples = rideSamples()
+  let bestI = -1
+  let bestDot = -2
+  for (let i = 0; i < samples.length; i++) {
+    const d = samples[i].dir.dot(dir)
+    if (d > bestDot) {
+      bestDot = d
+      bestI = i
+    }
+  }
+  if (bestI < 0) return null
+  const best = samples[bestI]
+  if (!best.dry) return null
+
+  // Lateral offset: `right` is perpendicular to the centreline, so the dot is
+  // the sine of the angle off it.
+  //
+  // NOTE: P41c's corner overhang is NOT fixed here. Refining against the two
+  // neighbouring segments can only make this offset smaller, and the overhang is
+  // the case where it is already too small — so that attempt was removed rather
+  // than left in costing time for nothing. Still open.
+  const o = Math.asin(Math.max(-1, Math.min(1, dir.dot(best.right)))) * best.ground
+  const a = Math.abs(o)
+  if (a > FOOT_OUT) return null
+  const lift = a <= MEDIAN_HALF ? MEDIAN_TOP : a <= LANE_OUT ? ASPHALT_LIFT : FOOTPATH_TOP
+
+  // edgeGround, in the same terms the cross-section uses
+  _rideProbe.copy(best.dir).addScaledVector(best.right, o / best.ground).normalize()
+  const raw = terrainRadius(_rideProbe)
+  const limit = a * Math.tan(MAX_TWIST)
+  const graded = best.ground + Math.max(-limit, Math.min(limit, raw - best.ground)) + lift
+
+  // blend to the real ground over the last stretch, so the edge has no step
+  const inset = FOOT_OUT - a
+  if (inset >= RIDE_TAPER) return graded
+  const k = Math.max(0, inset / RIDE_TAPER)
+  return raw + (graded - raw) * k
+}
+
+/**
+ * The surface anything standing here rests on: the ground, raised to the road
+ * or a bridge deck where one covers it. Used for placing things and for camera
+ * clearance — collision wants the snap guard instead, and does its own.
+ */
+export function groundOrDeck(dir: THREE.Vector3) {
+  let g = terrainRadius(dir)
+  const road = corridorSurface(dir)
+  if (road !== null && road > g) g = road
+  const deck = bridgeSurface(dir)
+  if (deck !== null && deck > g) g = deck
+  return g
+}

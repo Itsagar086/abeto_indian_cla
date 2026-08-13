@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useRef } from "react"
+import { useLayoutEffect, useMemo, useRef, type ReactNode } from "react"
 import * as THREE from "three"
 import { Outlines } from "@react-three/drei"
 import { useFrame } from "@react-three/fiber"
@@ -665,29 +665,7 @@ function PropInstance({ p }: { p: PlacedProp }) {
         </group>
       )
     }
-    case "bridge-rail": {
-      if (!p.aux) return null
-      const span = p.aux[0].distanceTo(p.aux[1]) + 0.04
-      // guardrail proportions: two posts and a top rail, all too thin to ink
-      return (
-        <group position={pos} quaternion={quat} scale={p.scale}>
-          {[-span / 2 + 0.06, span / 2 - 0.06].map((x, i) => (
-            <mesh key={i} position={[x, 0.22, 0]} castShadow>
-              <cylinderGeometry args={[0.025, 0.025, 0.55, 6]} />
-              <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
-            </mesh>
-          ))}
-          <mesh position={[0, 0.42, 0]} castShadow>
-            <boxGeometry args={[span, 0.08, 0.05]} />
-            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
-          </mesh>
-          <mesh position={[0, 0.22, 0]}>
-            <boxGeometry args={[span, 0.05, 0.04]} />
-            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
-          </mesh>
-        </group>
-      )
-    }
+    // "bridge-rail" renders as an instanced fleet — see BridgeRails below
     case "bridge-pier": {
       if (!p.aux) return null
       const height = p.aux[0].distanceTo(p.aux[1])
@@ -701,31 +679,7 @@ function PropInstance({ p }: { p: PlacedProp }) {
         </group>
       )
     }
-    case "metro-pillar": {
-      if (!p.aux) return null
-      const height = p.aux[0].distanceTo(p.aux[1])
-      return (
-        <group position={pos} quaternion={quat} scale={p.scale}>
-          {/* flared footing, rooted below grade */}
-          <mesh position={[0, -0.05, 0]} castShadow receiveShadow>
-            <boxGeometry args={[0.7, 0.3, 0.7]} />
-            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
-            <Ink />
-          </mesh>
-          <mesh position={[0, height / 2 - 0.1, 0]} castShadow receiveShadow>
-            <cylinderGeometry args={[0.32, 0.42, height + 0.2, 10]} />
-            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
-            <Ink />
-          </mesh>
-          {/* cap beam sits just under the deck */}
-          <mesh position={[0, height - 0.09, 0]} castShadow>
-            <boxGeometry args={[1.1, 0.15, 0.5]} />
-            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
-            <Ink />
-          </mesh>
-        </group>
-      )
-    }
+    // "metro-pillar" renders as an instanced fleet — see MetroPillars below
     case "metro-station": {
       if (!p.aux) return null
       const lift = p.aux[0].distanceTo(p.aux[1])
@@ -1040,15 +994,183 @@ function Corridors({ meshes }: { meshes: CorridorMesh[] }) {
   )
 }
 
+/* ------------------------------------------------- instanced prop fleets */
+
+const _IDENTITY_Q = new THREE.Quaternion()
+
+/**
+ * One shape drawn many times. Bridge rails and metro pillars were the two
+ * biggest draw-call sinks in the scene — 1,088 and 690 calls of per-prop meshes
+ * for what is the same geometry repeated at different transforms — so each
+ * sub-shape becomes a single InstancedMesh. Matrices are baked once here;
+ * nothing runs per frame. Culling needs no opt-out: three computes an
+ * InstancedMesh bounding sphere from every instance, so the fleet culls as a
+ * whole, correctly.
+ */
+function InstancedPart({
+  matrices,
+  castShadow = false,
+  receiveShadow = false,
+  children,
+}: {
+  matrices: THREE.Matrix4[]
+  castShadow?: boolean
+  receiveShadow?: boolean
+  children: ReactNode
+}) {
+  const ref = useRef<THREE.InstancedMesh>(null)
+  useLayoutEffect(() => {
+    const mesh = ref.current
+    if (!mesh) return
+    matrices.forEach((m, i) => mesh.setMatrixAt(i, m))
+    mesh.instanceMatrix.needsUpdate = true
+  }, [matrices])
+  return (
+    <instancedMesh
+      ref={ref}
+      args={[undefined, undefined, matrices.length]}
+      castShadow={castShadow}
+      receiveShadow={receiveShadow}
+    >
+      {children}
+    </instancedMesh>
+  )
+}
+
+/** world x local-translation x local-scale, the transform every part bakes */
+function partMatrix(
+  world: THREE.Matrix4,
+  x: number,
+  y: number,
+  z: number,
+  sx = 1,
+  sy = 1,
+  sz = 1,
+) {
+  return new THREE.Matrix4()
+    .compose(new THREE.Vector3(x, y, z), _IDENTITY_Q, new THREE.Vector3(sx, sy, sz))
+    .premultiply(world)
+}
+
+/**
+ * Every bridge railing on the planet: two posts and two rails per prop, as
+ * three InstancedMesh — not two, because the rails differ in colour AND in
+ * which of them casts a shadow, and a merged mesh could keep neither
+ * distinction. Instancing shares one material per part, which is safe because
+ * every bridge-rail is coloured from the same KIND_COLORS pair.
+ */
+function BridgeRails({ rails }: { rails: PlacedProp[] }) {
+  const parts = useMemo(() => {
+    const posts: THREE.Matrix4[] = []
+    const tops: THREE.Matrix4[] = []
+    const lows: THREE.Matrix4[] = []
+    const world = new THREE.Matrix4()
+    const scale = new THREE.Vector3()
+    for (const p of rails) {
+      if (!p.aux) continue
+      const span = p.aux[0].distanceTo(p.aux[1]) + 0.04
+      world.compose(p.position, p.quaternion, scale.setScalar(p.scale))
+      posts.push(partMatrix(world, -span / 2 + 0.06, 0.22, 0))
+      posts.push(partMatrix(world, span / 2 - 0.06, 0.22, 0))
+      // unit-length boxes stretched to each prop's span
+      tops.push(partMatrix(world, 0, 0.42, 0, span))
+      lows.push(partMatrix(world, 0, 0.22, 0, span))
+    }
+    return { posts, tops, lows }
+  }, [rails])
+  if (!rails.length) return null
+  const colorA = rails[0].colorA
+  const colorB = rails[0].colorB
+  return (
+    <>
+      <InstancedPart matrices={parts.posts} castShadow>
+        <cylinderGeometry args={[0.025, 0.025, 0.55, 6]} />
+        <meshToonMaterial color={colorA} gradientMap={toonGradient} />
+      </InstancedPart>
+      <InstancedPart matrices={parts.tops} castShadow>
+        <boxGeometry args={[1, 0.08, 0.05]} />
+        <meshToonMaterial color={colorA} gradientMap={toonGradient} />
+      </InstancedPart>
+      <InstancedPart matrices={parts.lows}>
+        <boxGeometry args={[1, 0.05, 0.04]} />
+        <meshToonMaterial color={colorB} gradientMap={toonGradient} />
+      </InstancedPart>
+    </>
+  )
+}
+
+/**
+ * Every metro pillar: footing, shaft and cap beam as three InstancedMesh.
+ * Pillar heights vary, so the shaft is a unit-height cone stretched per
+ * instance — three's shaders divide the normal by the instance scale (the
+ * inverse-transpose correction in defaultnormal_vertex), so the toon shading
+ * survives the stretch exactly.
+ *
+ * Ink: drei's <Outlines> does support InstancedMesh parents — it builds a hull
+ * InstancedMesh sharing the parent's geometry, count and instanceMatrix — so
+ * the footing and cap keep their outlines verbatim. The SHAFT's outline is
+ * omitted: drei's outline shader transforms the hull normal by instanceMatrix
+ * WITHOUT that correction, so the per-instance height scale would mis-aim the
+ * silhouette push and smear the line. The shaft sits between an inked footing
+ * and an inked cap, which carry the silhouette.
+ */
+function MetroPillars({ pillars }: { pillars: PlacedProp[] }) {
+  const parts = useMemo(() => {
+    const footings: THREE.Matrix4[] = []
+    const shafts: THREE.Matrix4[] = []
+    const caps: THREE.Matrix4[] = []
+    const world = new THREE.Matrix4()
+    const scale = new THREE.Vector3()
+    for (const p of pillars) {
+      if (!p.aux) continue
+      const height = p.aux[0].distanceTo(p.aux[1])
+      world.compose(p.position, p.quaternion, scale.setScalar(p.scale))
+      footings.push(partMatrix(world, 0, -0.05, 0))
+      shafts.push(partMatrix(world, 0, height / 2 - 0.1, 0, 1, height + 0.2, 1))
+      caps.push(partMatrix(world, 0, height - 0.09, 0))
+    }
+    return { footings, shafts, caps }
+  }, [pillars])
+  if (!pillars.length) return null
+  const colorA = pillars[0].colorA
+  const colorB = pillars[0].colorB
+  return (
+    <>
+      <InstancedPart matrices={parts.footings} castShadow receiveShadow>
+        <boxGeometry args={[0.7, 0.3, 0.7]} />
+        <meshToonMaterial color={colorA} gradientMap={toonGradient} />
+        <Ink />
+      </InstancedPart>
+      <InstancedPart matrices={parts.shafts} castShadow receiveShadow>
+        <cylinderGeometry args={[0.32, 0.42, 1, 10]} />
+        <meshToonMaterial color={colorA} gradientMap={toonGradient} />
+      </InstancedPart>
+      <InstancedPart matrices={parts.caps} castShadow>
+        <boxGeometry args={[1.1, 0.15, 0.5]} />
+        <meshToonMaterial color={colorB} gradientMap={toonGradient} />
+        <Ink />
+      </InstancedPart>
+    </>
+  )
+}
+
 export function PropsLayer() {
   const props = useMemo(() => buildProps(), [])
   // corridors need the metro pillars, which buildProps places
   const corridors = useMemo(() => buildCorridors(props), [props])
+  const rails = useMemo(() => props.filter((p) => p.kind === "bridge-rail"), [props])
+  const pillars = useMemo(() => props.filter((p) => p.kind === "metro-pillar"), [props])
+  const solo = useMemo(
+    () => props.filter((p) => p.kind !== "bridge-rail" && p.kind !== "metro-pillar"),
+    [props],
+  )
   return (
     <group>
-      {props.map((p, i) => (
+      {solo.map((p, i) => (
         <PropInstance key={i} p={p} />
       ))}
+      <BridgeRails rails={rails} />
+      <MetroPillars pillars={pillars} />
       <Corridors meshes={corridors} />
       <MetroTrains />
     </group>

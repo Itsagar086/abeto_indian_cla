@@ -5,8 +5,14 @@ import { useFrame, useThree } from "@react-three/fiber"
 import { Outlines } from "@react-three/drei"
 import * as THREE from "three"
 import { NPCS, PHYSICS, INITIAL_CHARACTER, ZONES } from "@/lib/game/data"
-import { npcSurfacePosition, terrainRadius } from "@/lib/game/terrain"
-import { propCollision, bridgeSurface, type PropHit } from "@/lib/game/props"
+import { terrainRadius } from "@/lib/game/terrain"
+import {
+  propCollision,
+  bridgeSurface,
+  corridorSurface,
+  groundOrDeck,
+  type PropHit,
+} from "@/lib/game/props"
 import { useGameStore } from "@/lib/game/store"
 import { playerState } from "@/lib/game/playerState"
 import { toonGradient } from "@/lib/game/toon"
@@ -63,6 +69,12 @@ const MAX_PUSH = 0.15
  * of downhill travel — large enough and you would get snapped up from the water.
  */
 const DECK_SNAP = 0.4
+/**
+ * The same guard for the road, but sized to the road. Embankment fill reaches
+ * 0.84u, so DECK_SNAP's 0.4 would leave the player stranded under the deepest
+ * fills — exactly the stretches where the gap is worst.
+ */
+const ROAD_SNAP = 1.1
 
 /** scratch for the collision work — the resolve loop allocates nothing */
 const _hit: PropHit = { normal: new THREE.Vector3(), depth: 0 }
@@ -112,8 +124,16 @@ export function Player() {
   const setNearbyNpc = useGameStore((s) => s.setNearbyNpc)
   const carrying = useGameStore((s) => s.carrying)
 
-  // hit-test against where each npc is actually drawn, not the authored point
-  const npcVecs = useMemo(() => NPCS.map((n) => npcSurfacePosition(n.position)), [])
+  // hit-test where NpcLayer actually draws them: both lift onto the road, and
+  // a mismatch between the two is exactly what BUG-101 was
+  const npcVecs = useMemo(
+    () =>
+      NPCS.map((n) => {
+        const d = new THREE.Vector3(...n.position).normalize()
+        return d.clone().multiplyScalar(groundOrDeck(d))
+      }),
+    [],
+  )
 
   // zone entry detection: unit direction of each zone centre, plus the zone we
   // are currently inside (kept in a ref so this never re-renders the player)
@@ -216,9 +236,16 @@ export function Player() {
     const dir = position.current.clone().normalize()
     const r = position.current.length()
     let groundR = terrainRadius(dir)
+    // the road first: its deck is smoothed along its length and filled over
+    // hollows, so on a corridor the real ground can sit most of a unit below
+    // the asphalt. Without this the player walks that raw ground and sinks
+    // through the road they can see.
+    const roadR = corridorSurface(dir)
+    if (roadR !== null && roadR > groundR && r >= roadR - ROAD_SNAP) groundR = roadR
     const deckR = bridgeSurface(dir)
     // stand on a deck only when already at or above it — walking underneath a
-    // bridge must not snatch the player up onto it
+    // bridge must not snatch the player up onto it. Applied after the road so a
+    // bridge wins wherever both could claim the same ground.
     if (deckR !== null && deckR > groundR && r >= deckR - DECK_SNAP) groundR = deckR
     if (r <= groundR) {
       position.current.copy(dir.multiplyScalar(groundR))
@@ -258,7 +285,7 @@ export function Player() {
     // hold the ideal camera above the ground it would otherwise slice into,
     // easing the lift in so cresting a hill glides rather than snaps
     _camDir.copy(camPos.current).normalize()
-    const camGround = terrainRadius(_camDir) + CAMERA_GROUND_CLEARANCE
+    const camGround = groundOrDeck(_camDir) + CAMERA_GROUND_CLEARANCE
     const camR = camPos.current.length()
     if (camR < camGround) {
       const k = Math.min(1, CAMERA_CLAMP_LERP * dt60)
@@ -298,7 +325,7 @@ export function Player() {
 
     // final safety: the pulled-in camera must still not sit inside a hill
     _camDir.copy(_camFinal).normalize()
-    const finalGround = terrainRadius(_camDir) + CAMERA_GROUND_CLEARANCE
+    const finalGround = groundOrDeck(_camDir) + CAMERA_GROUND_CLEARANCE
     if (_camFinal.length() < finalGround) _camFinal.setLength(finalGround)
 
     camera.position.copy(_camFinal)
