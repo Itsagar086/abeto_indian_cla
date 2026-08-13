@@ -983,10 +983,17 @@ function Corridors({ meshes }: { meshes: CorridorMesh[] }) {
     <group>
       {meshes.map((m) => (
         <mesh key={m.key} geometry={m.geometry} receiveShadow>
+          {/* depth-biased toward the camera: the skirt's outer rim sits ON the
+              ground by construction (P43 measured half its verts within 0.02u
+              of the terrain), and without the bias it shimmers against the
+              planet mesh. The offset settles who wins without moving geometry. */}
           <meshToonMaterial
             color={m.color}
             vertexColors={m.vertexColors ?? false}
             gradientMap={toonGradient}
+            polygonOffset
+            polygonOffsetFactor={-1}
+            polygonOffsetUnits={-1}
           />
         </mesh>
       ))}

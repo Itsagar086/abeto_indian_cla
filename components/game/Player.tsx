@@ -304,7 +304,10 @@ export function Player() {
         const t = i / CAM_LOS_SAMPLES
         _losSample.copy(_eye).addScaledVector(_losDir, fullDist * t)
         _losProbe.copy(_losSample).normalize()
-        if (_losSample.length() < terrainRadius(_losProbe) + CAM_LOS_CLEARANCE) {
+        // groundOrDeck, not raw terrain: an embankment road is solid to the eye,
+        // and with the raw probe the camera would settle in the hollow BESIDE
+        // a filled road and stare through its side — the P43 black screens
+        if (_losSample.length() < groundOrDeck(_losProbe) + CAM_LOS_CLEARANCE) {
           blockedT = t
           break
         }
