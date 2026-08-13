@@ -1906,6 +1906,65 @@ export type CorridorMesh = {
   vertexColors?: boolean
 }
 
+
+/**
+ * Half-window of the deck's height smoothing, in corridor samples (~0.6u each),
+ * and the light second pass that follows it.
+ *
+ * The corridor used to take terrainRadius() raw along its length: MAX_TWIST
+ * clamps the cross-slope but nothing touched the ride. Measured on the shipped
+ * profile that gave a crest-or-sag reversal every 8.2u and grade changes up to
+ * 0.47 — a roller coaster, not a graded highway.
+ */
+const CORRIDOR_SMOOTH = 12
+const CORRIDOR_RESMOOTH = 3
+
+/** moving average over +-w samples of an open array, clamping at the ends */
+function runningMean(src: number[], w: number) {
+  if (w <= 0) return src.slice()
+  const out: number[] = []
+  for (let i = 0; i < src.length; i++) {
+    let sum = 0
+    let n = 0
+    for (let k = -w; k <= w; k++) {
+      const j = i + k
+      if (j < 0 || j >= src.length) continue
+      sum += src[j]
+      n++
+    }
+    out.push(sum / n)
+  }
+  return out
+}
+
+/**
+ * Rideable deck height for one leg, one entry per sample.
+ *
+ * Smoothed, then held at or above the real ground, then smoothed again. The
+ * middle step is the important one: a road may fill a hollow but it cannot sink
+ * below a crest, and letting it cut even 0.15u put terrain through the deck on
+ * 4.4% of samples. Filling only costs nothing there — punch-through actually
+ * improves, because the deck sits higher. The last pass removes the crease that
+ * max() leaves where the filled profile rejoins the ground; without it the worst
+ * grade change was 0.72, with it 0.13.
+ *
+ * The window is sampled past both ends of the leg so neighbouring legs smooth
+ * into each other and no crease forms at a station.
+ */
+function corridorProfile(tA: number, span: number, steps: number) {
+  const pad = CORRIDOR_SMOOTH + CORRIDOR_RESMOOTH
+  const probe = new THREE.Vector3()
+  const raw: number[] = []
+  for (let i = -pad; i <= steps + pad; i++) {
+    loopDir(tA + (i / steps) * span, probe)
+    raw.push(terrainRadius(probe))
+  }
+  const smoothed = runningMean(raw, CORRIDOR_SMOOTH)
+  const filled = smoothed.map((v, i) => Math.max(v, raw[i]))
+  const ridden = runningMean(filled, CORRIDOR_RESMOOTH)
+  return ridden.slice(pad, pad + steps + 1)
+}
+
 /** the whole arterial cross-section, merged into one geometry per element */
 export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
   const out: CorridorMesh[] = []
@@ -1938,6 +1997,7 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
     const steps = Math.max(2, Math.ceil(span / CORRIDOR_STEP))
     const samples: Sample[] = []
     const dir = new THREE.Vector3()
+    const deckProfile = corridorProfile(tA, span, steps)
     const ahead = new THREE.Vector3()
     const behind = new THREE.Vector3()
     const fwd = new THREE.Vector3()
@@ -1955,7 +2015,9 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
       if (fwd.lengthSq() < 1e-12) continue
       fwd.normalize()
       const right = new THREE.Vector3().crossVectors(fwd, dir).normalize()
-      const ground = terrainRadius(dir)
+      // the rideable profile, not raw ground: see corridorProfile
+      const ground = deckProfile[i]
+      const wet = terrainRadius(dir)
       const centre = dir.clone().multiplyScalar(ground)
       // Break the median where a pillar's footing actually reaches into it,
       // measured box-to-band the way every clearance test has since P29 — the
@@ -1975,7 +2037,9 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
         right,
         ground,
         dry:
-          ground >= WATER_LEVEL + 0.48 &&
+          // tested against the real ground: a filled hollow must not let the
+          // road march out over water
+          wet >= WATER_LEVEL + 0.48 &&
           // the section reaches +-FOOT_OUT, so both verges must be dry too
           terrainRadius(
             dir.clone().addScaledVector(right, FOOT_OUT / ground).normalize(),
