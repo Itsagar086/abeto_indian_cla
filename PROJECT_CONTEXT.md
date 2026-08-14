@@ -150,10 +150,13 @@ of that profile: fully the road bed inside `GRADE_FULL 4.4`, feathered out by
 `GRADE_OUT 11` (wide, or the feather itself trips the rock colouring). The
 kernel spans BOTH legs at hub convergences so the ground never jumps
 allegiance. Guards, each one a measured failure: ground under the surfaced
-corridor is capped at the local profile (grass through asphalt in sags),
-wet-crossing profile samples are excluded from the average (they cut dry
-banks under the waterline), and **water is never graded at all** (the blend
-once raised an earthen land bridge across a gorge floor). This ended the
+corridor is capped at the local profile — fill AND cut, feathered off across
+4.5–5.5u so cut banks rise as slopes (grass sheeted over whole carriageway
+stretches before the cut case was capped), wet-crossing profile samples are
+excluded from the average (they cut dry banks under the waterline), and
+**water is never graded at all** (the blend once raised an earthen land
+bridge across a gorge floor). Terrain-above-ride-surface probes on the
+carriageway: 0 of 6,160. This ended the
 permanent-embankment look: edge gap at the footpath edge max 1.44 → 0.64u
 with the p90 equal to the 0.16u kerb height, rock-band colouring 10.9% (was
 21.9%; ambient 33%). Exports: `loopProfileAt(t)`, `loopWorldS(t)`,
@@ -235,15 +238,21 @@ leg, `rideSamples`, bridge banks). **Punch-through 0.00%**, over-cap 0; the
 `[road]` console line now reads fill vs the GRADED ground (max ~0.66u — the
 land carries the rest). `MAX_TWIST 0.46` clamps cross-slope. Station-seam
 ride steps: worst **0.0135u** (was 0.0318u). One dry rule
-(`corridorSampleDry`) is shared by the mesh and ride samplers; it also skips
-stretches sitting >1u under a bridge deck, so no ghost road dives beneath the
-level gorge viaducts.
+(`corridorSampleDry`) is shared by the mesh and ride samplers: wet needs the
+centre or BOTH verges under water (a single verge graze used to punch
+one-segment holes at lakeshores), and a stretch >2.5u under its OWN road's
+deck is skipped (`ownDeckAbove`) so no ghost road dives beneath the gorge
+viaducts — foreign viaducts overhead never suppress, and ramp feet (+1u)
+keep their road.
 
-**Overlap control (P43):** per-sample fold caps (local turn radius) plus a
+**Overlap control (P43/P47):** per-sample fold caps (local turn radius) plus a
 global **wedge trim** — any lateral reach inside the band of an earlier,
 non-neighbouring stretch is surrendered (deterministic priority), so exactly
 one surface survives at hub corners (0 z-fighting pairs; skirt yields to any
-foreign band). Corridor materials carry `polygonOffset(-1,-1)` against the
+foreign band). P47 tightened the cut to a 0.05u hairline seam (was a 0.25u
+margin plus a 0.6u sliver floor that deleted whole carriageway sides at hub
+corners — invisible against the old embankment, a broken road once the
+ground was graded flush). Corridor materials carry `polygonOffset(-1,-1)` against the
 planet mesh.
 
 **Geometry:** one merged `MeshBuf` per element per leg — 45 meshes,

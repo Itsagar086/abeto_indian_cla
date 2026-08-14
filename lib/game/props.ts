@@ -1472,8 +1472,20 @@ function placeRoadFurniture(props: PlacedProp[]) {
       const tangent = arcTangent(dir, oDir)
       if (!tangent) continue
       const perp = new THREE.Vector3().crossVectors(dir, tangent).normalize()
-      const sigDir = offsetDir(dir, perp, SIGNAL_OFFSET)
-      if (roadDistance(sigDir) < RIBBON_CLEAR) continue
+      // Walk the pole outward (either side) until it clears the drawn
+      // corridor, not just the painted ribbon — the fixed 0.06 rad offset
+      // stood a signal mid-carriageway, same failure as the signboards.
+      let sigDir: THREE.Vector3 | null = null
+      outer: for (const side of [1, -1]) {
+        for (let k = SIGNAL_OFFSET; k <= 0.26; k += 0.03) {
+          const cand = offsetDir(dir, perp, k * side)
+          if (roadDistance(cand) < RIBBON_CLEAR) continue
+          if (arterialDistance(cand) < CORRIDOR_SUPPRESS) continue
+          sigDir = cand
+          break outer
+        }
+      }
+      if (!sigDir) continue
       const pos = surfacePoint(sigDir, 0)
       if (pos.length() < WATER_LEVEL + 0.48) continue
       const sigTan = arcTangent(sigDir, oDir)
@@ -2014,30 +2026,57 @@ export type CorridorMesh = {
 const _dryProbe = new THREE.Vector3()
 
 /**
+ * Is a deck of THIS road pair hanging well above here? Only the leg's OWN
+ * bridge may suppress it — the generic "any deck overhead" test also erased
+ * corridor stretches passing legitimately under another road's viaduct (the
+ * haveli-bazaar span hangs over the loop near the haveli hub, and the road
+ * below it vanished).
+ */
+function ownDeckAbove(dir: THREE.Vector3, ground: number, idA: string, idB: string) {
+  for (const d of decks()) {
+    const [pa, pb] = ROAD_PAIRS[d.span.road]
+    if (!((pa === idA && pb === idB) || (pa === idB && pb === idA))) continue
+    const t = Math.atan2(dir.dot(d.perp), dir.dot(d.a))
+    if (t < d.span.tA || t > d.span.tB) continue
+    const lateral = Math.abs(Math.asin(Math.max(-1, Math.min(1, dir.dot(d.n))))) * d.deckR
+    if (lateral > d.span.halfWidth) continue
+    // 2.5u: only the genuinely diving ghost road is culled — at +1 the rule
+    // also bit under the descending ramp feet and punched 1u holes in the
+    // road right before each bridge (measured, all four dry-land holes)
+    if (bridgeHeight(d.span, t, d.bankA, d.bankB, d.deckR) + DECK_TOP > ground + 2.5) return true
+  }
+  return false
+}
+
+/**
  * ONE dry rule for a corridor cross-section, shared by the mesh sampler and
  * the ride sampler so the drawn road and the walkable road always agree.
  */
-function corridorSampleDry(dir: THREE.Vector3, right: THREE.Vector3, ground: number) {
+function corridorSampleDry(
+  dir: THREE.Vector3,
+  right: THREE.Vector3,
+  ground: number,
+  idA: string,
+  idB: string,
+) {
   // the deck height itself must clear the water — near a crossing the graded
   // terrain can read dry while the profile is still down in the gorge
   if (ground < WATER_LEVEL + 0.3) return false
   // tested against the real ground: a filled hollow must not let the road
-  // march out over water; the section reaches ±FOOT_OUT, so both verges too
+  // march out over water. The centre, or BOTH verges, must be wet — a single
+  // verge grazing a lakeshore used to punch a one-segment hole in an
+  // otherwise dry road, which reads far worse than a kerb over the shallows
   if (terrainRadius(dir) < WATER_LEVEL + 0.48) return false
-  if (
+  const wetL =
     terrainRadius(_dryProbe.copy(dir).addScaledVector(right, FOOT_OUT / ground).normalize()) <
     WATER_LEVEL + 0.48
-  )
-    return false
-  if (
+  const wetR =
     terrainRadius(_dryProbe.copy(dir).addScaledVector(right, -FOOT_OUT / ground).normalize()) <
     WATER_LEVEL + 0.48
-  )
-    return false
-  // a deck well overhead carries this stretch (the level gorge viaducts) —
-  // don't draw the diving ghost road underneath it
-  const deck = bridgeSurface(dir)
-  if (deck !== null && deck > ground + 1) return false
+  if (wetL && wetR) return false
+  // this leg's own deck well overhead carries the stretch (the level gorge
+  // viaducts) — don't draw the diving ghost road underneath it
+  if (ownDeckAbove(dir, ground, idA, idB)) return false
   return true
 }
 
@@ -2125,7 +2164,7 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
         skirtCapL: Infinity,
         skirtCapR: Infinity,
         ground,
-        dry: corridorSampleDry(dir, right, ground),
+        dry: corridorSampleDry(dir, right, ground, idA, idB),
         medianOk,
         // GLOBAL ride distance, not a per-leg run: dash windows key off this
         s: loopWorldS(t),
@@ -2254,8 +2293,13 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
         }
         const toCap = (first: number) => {
           if (first === Infinity) return Infinity
-          const c = first - 0.25
-          return c < 0.6 ? 0 : c // slivers read worse than a clean cut
+          // Meet the neighbouring band with a hairline seam instead of
+          // surrendering the whole side: the old 0.25u margin + 0.6u sliver
+          // floor cut entire carriageway sides at hub corners, and with the
+          // ground now graded flush the missing tarmac read as a broken road
+          // (it used to hide against the embankment). 0.05 keeps the bands
+          // from overlapping, so the P43 z-fight guarantee stands.
+          return Math.max(0, first - 0.05)
         }
         const cap = toCap(firstEarlier)
         const skirtCap = toCap(firstAny)
@@ -3172,7 +3216,7 @@ function rideSamples(): RideSample[] {
         dir: dir.clone(),
         right,
         ground,
-        dry: corridorSampleDry(dir, right, ground),
+        dry: corridorSampleDry(dir, right, ground, idA, idB),
         leg,
       })
     }

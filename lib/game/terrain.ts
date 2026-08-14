@@ -584,13 +584,14 @@ export function terrainRadius(dir: THREE.Vector3) {
   // ill-conditioned average never steers the ground
   if (wsum < 2) f *= wsum / 2
   let r = nat + (road - nat) * f
-  // The averaged road height overshoots the actual deck in profile sags and
-  // where a second, higher leg feeds the kernel at a hub — measured 0.67u of
-  // grass through the asphalt. Under the surfaced corridor the ground may
-  // never rise above the profile itself (continuous nearest-t sample). Wet
-  // crossings are exempt: there the profile dives under the bridge and the
-  // gorge must keep its walls.
-  if (latMin < 5.5 && r > nat) {
+  // The averaged road height overshoots the actual deck in profile sags,
+  // where a second leg feeds the kernel at a hub, AND on hillside cuts (the
+  // feathered blend leaves the cut floor above the deck — grass sheeted over
+  // whole carriageway stretches). Under the surfaced corridor the ground may
+  // never rise above the profile itself (continuous nearest-t sample), fill
+  // or cut alike. Wet crossings are exempt: there the profile dives under
+  // the bridge and the gorge must keep its walls.
+  if (latMin < 5.5) {
     // continuous t: project onto the two adjacent loop segments in unit space
     let bestT = bi * step
     let bestD2 = Infinity
@@ -614,7 +615,13 @@ export function terrainRadius(dir: THREE.Vector3) {
       }
     }
     const prof = loopProfileAt(bestT)
-    if (prof >= WATER_LEVEL + 0.3 && r > prof) r = prof
+    if (prof >= WATER_LEVEL + 0.3 && r > prof) {
+      // feather the cap off across the shoulder (4.5 → 5.5u) so a cut bank
+      // rises as a slope past the road edge instead of a cliff at 5.5u
+      const s = latMin <= 4.5 ? 0 : latMin - 4.5
+      const k = s <= 0 ? 0 : s * s * (3 - 2 * s)
+      r = prof + (r - prof) * k
+    }
   }
   return r
 }
