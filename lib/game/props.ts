@@ -1,4 +1,4 @@
-import * as THREE from "three"
+﻿import * as THREE from "three"
 import { ZONES, NPCS, WATER_LEVEL } from "./data"
 import {
   surfacePoint,
@@ -9,6 +9,10 @@ import {
   terrainColor,
   npcSurfacePosition,
   slopeAt,
+  METRO_LOOP,
+  ROAD_MAX_FILL,
+  loopProfileAt,
+  loopWorldS,
 } from "./terrain"
 
 export type PropKind =
@@ -111,54 +115,7 @@ const KIND_COLORS: Partial<Record<PropKind, [string, string]>> = {
 
 const ZONE_DIRS = ZONES.map((z) => new THREE.Vector3(...z.center).normalize())
 
-/** closed tour of all nine zones: nearest neighbour from KR Market, then 2-opt */
-function planLoop(): number[] {
-  const n = ZONE_DIRS.length
-  const dist = (a: number, b: number) => ZONE_DIRS[a].angleTo(ZONE_DIRS[b])
-  const start = Math.max(0, ZONES.findIndex((z) => z.id === "bazaar"))
-
-  const tour = [start]
-  const left = new Set<number>()
-  for (let i = 0; i < n; i++) if (i !== start) left.add(i)
-  while (left.size) {
-    const last = tour[tour.length - 1]
-    let best = -1
-    let bestD = Infinity
-    for (const c of left) {
-      const d = dist(last, c)
-      if (d < bestD) {
-        bestD = d
-        best = c
-      }
-    }
-    tour.push(best)
-    left.delete(best)
-  }
-
-  const length = (t: number[]) => {
-    let s = 0
-    for (let i = 0; i < n; i++) s += dist(t[i], t[(i + 1) % n])
-    return s
-  }
-  for (let pass = 0; pass < 40; pass++) {
-    let improved = false
-    for (let i = 1; i < n - 1 && !improved; i++) {
-      for (let k = i + 1; k < n && !improved; k++) {
-        const cand = tour
-          .slice(0, i)
-          .concat(tour.slice(i, k + 1).reverse(), tour.slice(k + 1))
-        if (length(cand) < length(tour) - 1e-9) {
-          tour.splice(0, n, ...cand)
-          improved = true
-        }
-      }
-    }
-    if (!improved) break
-  }
-  return tour
-}
-
-const METRO_ORDER = planLoop()
+const METRO_ORDER = METRO_LOOP.order
 export const METRO_ZONE_IDS = METRO_ORDER.map((i) => ZONES[i].id)
 export const METRO_TOUR_LENGTH = (() => {
   let s = 0
@@ -170,13 +127,6 @@ export const METRO_TOUR_LENGTH = (() => {
 
 /* ------------------------------------------------------------ deck profile */
 
-const DECK_SAMPLE = 0.02
-/**
- * Spacing of the extra spline controls seeded along each leg's great circle.
- * It trades two things off against each other: smaller hugs the arc more
- * tightly, larger rounds the corner at each hub more generously.
- */
-const CONTROL_STEP = 0.12
 const DECK_SMOOTH = 7
 const DECK_RISE = 8
 const DECK_MIN_CLEAR = 6.4
@@ -275,6 +225,16 @@ const FOOTPRINT: Partial<Record<PropKind, [number, number]>> = {
   "workshop-shed": [1.6, 1.6],
 }
 
+/**
+ * How far a building's wall line must stand off the corridor centreline.
+ * Decoupled from SKIRT_OUT: when the shoulder widened to 5.55 the setback
+ * silently rode along, pushing shopfronts 1.6u from the footpath. 5.1 is the
+ * measured knee — the shoulder's rise above natural ground is at most 0.26u
+ * there (vs 0.71u at the old 4.55), which the buildings' 0.8u below-grade
+ * walls absorb, and a Bengaluru street wants its shopfronts close.
+ */
+const BUILDING_SETBACK = 5.1
+
 /** perimeter samples per box edge when testing a footprint against a corridor */
 const FOOT_SAMPLES = 8
 const _footV = new THREE.Vector3()
@@ -297,10 +257,7 @@ function footprintClear(dir: THREE.Vector3, box: [number, number], scale: number
       else if (e === 2) _footV.set(hx, 0, t * hz)
       else _footV.set(-hx, 0, t * hz)
       _footV.multiplyScalar(scale).applyQuaternion(quat).add(origin).normalize()
-      // SKIRT_OUT, not FOOT_OUT: a building standing in the graded apron is a
-      // building the road has cut the ground out from under. Read inside the
-      // function, so the corridor section declaring it further down is fine.
-      if (arterialDistance(_footV) < SKIRT_OUT) return false
+      if (arterialDistance(_footV) < BUILDING_SETBACK) return false
     }
   }
   return true
@@ -507,66 +464,11 @@ function buildNetwork(placed: PlacedProp[]): MetroNet {
    * grading back on the same zone-to-zone route; stations are then sited along
    * this curve rather than defining it.
    *
-   * The nine zone centres alone are not enough: a Catmull-Rom through points
-   * that far apart bows away from the geodesic between them, which measured
-   * 1.39u median / 3.10u worst off the road arcs and left the loop 19% longer
-   * than the tour it represents. Each leg is therefore also seeded with control
-   * points sampled along its own great circle, so the curve hugs the arc between
-   * hubs and only rounds the corner at each one.
+   * The spline geometry itself (control seeding, resample, zone arc positions)
+   * lives in terrain.ts as METRO_LOOP so the terrain grading and this network
+   * are guaranteed to follow the same curve.
    */
-  const controls: THREE.Vector3[] = []
-  /** index into `controls` of each zone centre, in METRO_ORDER */
-  const zoneControl: number[] = []
-  for (let i = 0; i < METRO_ORDER.length; i++) {
-    const a = ZONE_DIRS[METRO_ORDER[i]]
-    const b = ZONE_DIRS[METRO_ORDER[(i + 1) % METRO_ORDER.length]]
-    const om = a.angleTo(b)
-    const sin = Math.sin(om)
-    zoneControl.push(controls.length)
-    const k = Math.max(1, Math.round(om / CONTROL_STEP))
-    for (let j = 0; j < k; j++) {
-      const t = (j / k) * om
-      controls.push(
-        sin < 1e-9
-          ? a.clone()
-          : a
-              .clone()
-              .multiplyScalar(Math.sin(om - t) / sin)
-              .addScaledVector(b, Math.sin(t) / sin)
-              .normalize(),
-      )
-    }
-  }
-
-  const curve = new THREE.CatmullRomCurve3(
-    controls.map((d) => d.clone()),
-    true,
-    "centripetal",
-  )
-  const M = 4000
-  const pts: THREE.Vector3[] = []
-  for (let i = 0; i < M; i++) pts.push(curve.getPoint(i / M).normalize())
-  const cum = new Float64Array(M + 1)
-  for (let i = 0; i < M; i++) cum[i + 1] = cum[i] + pts[i].angleTo(pts[(i + 1) % M])
-  const total = cum[M]
-
-  const n = Math.max(16, Math.round(total / DECK_SAMPLE))
-  const step = total / n
-  const dirs = new Float64Array(n * 3)
-  {
-    let seg = 0
-    const v = new THREE.Vector3()
-    for (let i = 0; i < n; i++) {
-      const target = i * step
-      while (seg < M - 1 && cum[seg + 1] < target) seg++
-      const span = cum[seg + 1] - cum[seg]
-      const f = span > 1e-12 ? (target - cum[seg]) / span : 0
-      v.copy(pts[seg]).lerp(pts[(seg + 1) % M], f).normalize()
-      dirs[i * 3] = v.x
-      dirs[i * 3 + 1] = v.y
-      dirs[i * 3 + 2] = v.z
-    }
-  }
+  const { dirs, n, step, total, zoneT } = METRO_LOOP
 
   // ground profile -> smoothed -> lifted -> slope limited (raising only)
   const raw = new Float64Array(n)
@@ -600,11 +502,6 @@ function buildNetwork(placed: PlacedProp[]): MetroNet {
       deck[i] = Math.max(deck[i], deck[q] - DECK_MAX_STEP)
     }
   }
-
-  // Arc position of each zone centre: the closed spline passes through control
-  // k at u = k/K, so sample j = k/K * M is that control, and cum[j] its length.
-  const K = controls.length
-  const zoneT = zoneControl.map((k) => cum[Math.min(M, Math.round((k / K) * M))])
 
   // Stations ride the finished curve. They are sited only now, because the
   // curve no longer depends on them — the dependency used to run the other way.
@@ -817,14 +714,18 @@ function placeMetro(props: PlacedProp[]) {
     const nominal = i * step
     loopDir(nominal, dir)
     const nominalGround = terrainRadius(dir)
-    if (nominalGround < WATER_LEVEL + 0.48) continue
+    // Footings may stand IN water — the same rule the bridge piers use. The
+    // old dry-only rule skipped ~14 consecutive footings at each gorge
+    // crossing and the deck read as grey slabs hanging from nothing (the
+    // P46 "stray floating slabs"; every unsupported piece was a track
+    // segment over a skipped-pillar run).
 
     let t = nominal
     const nominalSpot = dir.clone().multiplyScalar(nominalGround)
     const coned = blocksSightline(nominalSpot, lines)
     if (!npcClearance(nominalSpot).ok || coned) {
       // A footing slides if it would land on a villager or inside a temple
-      // approach cone, and only to a spot that is dry, clear of villagers, not
+      // approach cone, and only to a spot that is clear of villagers, not
       // on top of a prop — nudging blindly once put a pillar 0.07u into the
       // temple steps — and not itself in a cone.
       let moved = false
@@ -832,7 +733,6 @@ function placeMetro(props: PlacedProp[]) {
         const probe = nominal + nudge
         loopDir(probe, dir)
         const g = terrainRadius(dir)
-        if (g < WATER_LEVEL + 0.48) continue
         const spot = dir.clone().multiplyScalar(g)
         if (!npcClearance(spot).ok) continue
         if (propClearance(spot, props).nearest < CLEAR_SMALL) continue
@@ -841,7 +741,22 @@ function placeMetro(props: PlacedProp[]) {
         moved = true
         break
       }
-      // nowhere clear in the window: leave the gap, the deck spans it
+      if (!moved) {
+        // Last resort: take the least-bad nudge, waiving only the prop
+        // clearance — a footing brushing a bush beats a deck hanging in the
+        // air. Villagers and the temple sightline stay inviolable.
+        for (const nudge of PILLAR_NUDGES_WIDE) {
+          const probe = nominal + nudge
+          loopDir(probe, dir)
+          const spot = dir.clone().multiplyScalar(terrainRadius(dir))
+          if (!npcClearance(spot).ok) continue
+          if (blocksSightline(spot, lines)) continue
+          t = probe
+          moved = true
+          break
+        }
+      }
+      // villagers or the sightline block the whole window: a genuine gap
       if (!moved) continue
     }
 
@@ -1123,8 +1038,8 @@ const BRIDGE_SPANS: BridgeSpan[] = (() => {
         const end = wet ? t : t - BRIDGE_SAMPLE
         const arc = end - runStart
         if (arc >= MIN_SPAN) {
-          const tA = Math.max(0, runStart - BRIDGE_RAMP)
-          const tB = Math.min(omega, end + BRIDGE_RAMP)
+          let tA = Math.max(0, runStart - BRIDGE_RAMP)
+          let tB = Math.min(omega, end + BRIDGE_RAMP)
           const worldLength = arc * BRIDGE_DECK_R
           const [pa, pb] = ROAD_PAIRS[road]
           // read off METRO_ZONE_IDS, not ARTERIAL_PAIRS: this runs at module
@@ -1133,6 +1048,58 @@ const BRIDGE_SPANS: BridgeSpan[] = (() => {
             const next = METRO_ZONE_IDS[(k + 1) % METRO_ZONE_IDS.length]
             return (id === pa && next === pb) || (id === pb && next === pa)
           })
+          if (arterial) {
+            // The corridor stops drawing while EITHER verge probe (±3.95u, the
+            // corridor's own dry rule — literal for the same load-order reason
+            // as the half-width above) still touches water, which is inland of
+            // the waterline. Walk each ramp foot out until the ground it lands
+            // on is dry across the full cross-section, else neither surface
+            // covers the in-between and the handoff is a 1.1u cliff onto bare
+            // terrain (measured, both gorge crossings).
+            const n = new THREE.Vector3().crossVectors(a, b).normalize()
+            const q = new THREE.Vector3()
+            const edgeWet = (t: number) => {
+              arcPoint(a, b, omega, t, dir)
+              const r = terrainRadius(dir)
+              if (r < WET_MARK) return true
+              for (const s of [1, -1]) {
+                q.copy(dir).addScaledVector(n, (s * 3.95) / r).normalize()
+                if (terrainRadius(q) < WET_MARK) return true
+              }
+              return false
+            }
+            while (tA > 0 && edgeWet(tA)) tA = Math.max(0, tA - BRIDGE_SAMPLE)
+            while (tB < omega && edgeWet(tB)) tB = Math.min(omega, tB + BRIDGE_SAMPLE)
+            // The two arterial crossings are gorges, and the capped profile
+            // dives down their rims at up to grade ~1 — a ski-jump road. Any
+            // approach steeper than a rideable grade is swallowed by the
+            // bridge instead: the ramp foot walks uphill until the profile
+            // is gentle, and the deck (spanDeckR) then spans level with it.
+            const APPROACH_GRADE = 0.35
+            const gradeAt = (t: number) => {
+              arcPoint(a, b, omega, t, dir)
+              const lt = nearestLoopT(dir)
+              const d = 0.02
+              const r = loopProfileAt(lt)
+              return Math.abs(loopProfileAt(lt + d) - loopProfileAt(lt - d)) / (2 * d * r)
+            }
+            let extra = 0.3 // rad, per side — keeps the walk out of the hubs
+            while (tA > 0 && extra > 0 && gradeAt(tA) > APPROACH_GRADE) {
+              tA = Math.max(0, tA - BRIDGE_SAMPLE)
+              extra -= BRIDGE_SAMPLE
+            }
+            extra = 0.3
+            while (tB < omega && extra > 0 && gradeAt(tB) > APPROACH_GRADE) {
+              tB = Math.min(omega, tB + BRIDGE_SAMPLE)
+              extra -= BRIDGE_SAMPLE
+            }
+            // one corridor sample spacing (0.015 rad — literal for load order)
+            // of overlap: the corridor drops a whole SEGMENT when either end
+            // sample is wet, so its coverage retreats up to one spacing past
+            // the last edge-wet point and the deck must reach in under it
+            tA = Math.max(0, tA - 0.015)
+            tB = Math.min(omega, tB + 0.015)
+          }
           spans.push({
             halfWidth: arterial ? BRIDGE_ARTERIAL_HALF_WIDTH : BRIDGE_HALF_WIDTH,
             road,
@@ -1158,7 +1125,73 @@ export function bridgeReport() {
     arc: s.arc,
     worldLength: s.worldLength,
     piers: s.piers,
+    t0: s.t0,
+    t1: s.t1,
+    tA: s.tA,
+    tB: s.tB,
+    halfWidth: s.halfWidth,
   }))
+}
+
+/** continuous loop arc position of the point on the loop nearest to `dir` */
+function nearestLoopT(dir: THREE.Vector3) {
+  const { dirs, n, step } = METRO_LOOP
+  let bd = -2
+  let bi = 0
+  for (let i = 0; i < n; i++) {
+    const d = dir.x * dirs[i * 3] + dir.y * dirs[i * 3 + 1] + dir.z * dirs[i * 3 + 2]
+    if (d > bd) {
+      bd = d
+      bi = i
+    }
+  }
+  // refine within the two adjacent segments so t is continuous, not quantised
+  // to the 0.02 rad sample grid (that alone would be a 0.1u bank height error)
+  const sx = (i: number) => dirs[(((i % n) + n) % n) * 3]
+  const sy = (i: number) => dirs[(((i % n) + n) % n) * 3 + 1]
+  const sz = (i: number) => dirs[(((i % n) + n) % n) * 3 + 2]
+  let bestT = bi * step
+  let bestD2 = Infinity
+  for (const j of [bi - 1, bi + 1]) {
+    const ax = sx(bi), ay = sy(bi), az = sz(bi)
+    const bx2 = sx(j) - ax, by2 = sy(j) - ay, bz2 = sz(j) - az
+    const len2 = bx2 * bx2 + by2 * by2 + bz2 * bz2
+    if (len2 < 1e-12) continue
+    let f = ((dir.x - ax) * bx2 + (dir.y - ay) * by2 + (dir.z - az) * bz2) / len2
+    f = Math.max(0, Math.min(1, f))
+    const px = ax + bx2 * f - dir.x
+    const py = ay + by2 * f - dir.y
+    const pz = az + bz2 * f - dir.z
+    const d2 = px * px + py * py + pz * pz
+    if (d2 < bestD2) {
+      bestD2 = d2
+      bestT = (bi + (j < bi ? -f : f)) * step
+    }
+  }
+  return bestT
+}
+
+/**
+ * Bank heights for a span. An arterial crossing hands off to the corridor,
+ * whose deck rides the smoothed fill profile — up to 1.2u above the raw ground
+ * the banks used to sample, which was exactly the step measured at every wet
+ * arterial span. Sample the corridor's own profile instead, offset so deck top
+ * meets carriageway top. Local-road spans still meet the raw ground.
+ */
+function spanBanks(
+  span: BridgeSpan,
+  a: THREE.Vector3,
+  b: THREE.Vector3,
+  omega: number,
+): readonly [number, number] {
+  const probe = new THREE.Vector3()
+  const bank = (t: number) => {
+    arcPoint(a, b, omega, t, probe)
+    if (span.halfWidth === BRIDGE_ARTERIAL_HALF_WIDTH && NET)
+      return loopProfileAt(nearestLoopT(probe)) + ASPHALT_LIFT - DECK_TOP
+    return terrainRadius(probe)
+  }
+  return [bank(span.tA), bank(span.tB)]
 }
 
 /** is this point on a road covered by a bridge, ramps included? */
@@ -1170,16 +1203,34 @@ function onBridge(road: number, angle: number) {
 }
 
 /** deck height at `t` within a span: flat over water, ramping down at the banks */
-function bridgeHeight(span: BridgeSpan, t: number, bankA: number, bankB: number) {
+function bridgeHeight(
+  span: BridgeSpan,
+  t: number,
+  bankA: number,
+  bankB: number,
+  deckR = BRIDGE_DECK_R,
+) {
   if (t <= span.t0) {
     const f = span.t0 > span.tA ? (t - span.tA) / (span.t0 - span.tA) : 1
-    return bankA + (BRIDGE_DECK_R - bankA) * f
+    return bankA + (deckR - bankA) * f
   }
   if (t >= span.t1) {
     const f = span.tB > span.t1 ? (t - span.t1) / (span.tB - span.t1) : 1
-    return BRIDGE_DECK_R + (bankB - BRIDGE_DECK_R) * f
+    return deckR + (bankB - deckR) * f
   }
-  return BRIDGE_DECK_R
+  return deckR
+}
+
+/**
+ * Flat-section height for a span. The two arterial crossings are gorges — the
+ * old fixed water-level deck made the road dive ~12u below its own banks and
+ * climb back out. An arterial deck spans LEVEL with its lower bank instead (a
+ * viaduct; the piers grow to reach it). Local-road spans stay skimming the
+ * water, which suits their low beach-level banks.
+ */
+function spanDeckR(span: BridgeSpan, bankA: number, bankB: number) {
+  if (span.halfWidth !== BRIDGE_ARTERIAL_HALF_WIDTH) return BRIDGE_DECK_R
+  return Math.max(BRIDGE_DECK_R, Math.min(bankA, bankB))
 }
 
 /** decks, railings and piers for every water crossing */
@@ -1199,13 +1250,12 @@ function placeBridges(props: PlacedProp[]) {
     const b = new THREE.Vector3(...zb.center).normalize()
     const omega = a.angleTo(b)
 
-    const probe = new THREE.Vector3()
-    const bankA = terrainRadius(arcPoint(a, b, omega, span.tA, probe))
-    const bankB = terrainRadius(arcPoint(a, b, omega, span.tB, probe))
+    const [bankA, bankB] = spanBanks(span, a, b, omega)
+    const deckR = spanDeckR(span, bankA, bankB)
 
     const dirAt = (t: number, target: THREE.Vector3) => arcPoint(a, b, omega, t, target)
     const pointAt = (t: number, target: THREE.Vector3) =>
-      dirAt(t, target).multiplyScalar(bridgeHeight(span, t, bankA, bankB))
+      dirAt(t, target).multiplyScalar(bridgeHeight(span, t, bankA, bankB, deckR))
 
     const steps = Math.max(2, Math.ceil((span.tB - span.tA) / BRIDGE_SAMPLE))
     const step = (span.tB - span.tA) / steps
@@ -1256,7 +1306,7 @@ function placeBridges(props: PlacedProp[]) {
       const t = span.t0 + (span.t1 - span.t0) * f
       const d = dirAt(t, new THREE.Vector3())
       const bed = d.clone().multiplyScalar(terrainRadius(d))
-      const top = d.clone().multiplyScalar(bridgeHeight(span, t, bankA, bankB))
+      const top = d.clone().multiplyScalar(bridgeHeight(span, t, bankA, bankB, deckR))
       props.push({
         kind: "bridge-pier",
         position: bed,
@@ -1476,12 +1526,16 @@ function placeRoadFurniture(props: PlacedProp[]) {
     }
     const walk = Math.min(SIGN_ANGLE, 0.4 * arcLength, 0.4 * nearestOther)
 
-    // first side, then the other, then the same two a little further out
+    // first side, then the other, then the same two further and further out
     const attempts: [number, number][] = [
       [walk, 1],
       [walk, -1],
       [walk + SIGN_RETRY, 1],
       [walk + SIGN_RETRY, -1],
+      [walk + SIGN_RETRY * 2, 1],
+      [walk + SIGN_RETRY * 2, -1],
+      [walk + SIGN_RETRY * 3, 1],
+      [walk + SIGN_RETRY * 3, -1],
     ]
     for (let attempt = 0; attempt < attempts.length; attempt++) {
       const [along, side] = attempts[attempt]
@@ -1493,8 +1547,19 @@ function placeRoadFurniture(props: PlacedProp[]) {
       const tangent = arcTangent(onRoad, oDir)
       if (!tangent) continue
       const perp = new THREE.Vector3().crossVectors(onRoad, tangent).normalize()
-      const dir = offsetDir(onRoad, perp, SIGN_OFFSET * side)
-      if (roadDistance(dir) < RIBBON_CLEAR) continue
+      // Walk the board outward until it stands clear of the drawn corridor,
+      // not just the painted ribbon — the fixed 0.05 rad offset left the SP
+      // Road board mid-carriageway (the corridor follows the spline, not the
+      // arc this walk measures on, and is far wider than the ribbon).
+      let dir: THREE.Vector3 | null = null
+      for (let k = SIGN_OFFSET; k <= 0.26; k += 0.03) {
+        const cand = offsetDir(onRoad, perp, k * side)
+        if (roadDistance(cand) < RIBBON_CLEAR) continue
+        if (arterialDistance(cand) < CORRIDOR_SUPPRESS) continue
+        dir = cand
+        break
+      }
+      if (!dir) continue
       const pos = surfacePoint(dir, 0)
       if (pos.length() < WATER_LEVEL + 0.48) continue
       const boardTan = arcTangent(dir, oDir)
@@ -1579,7 +1644,7 @@ export function buildProps(): PlacedProp[] {
         // cheap gate first: the centre lies inside the box, so a centre inside
         // the band can never yield a clear footprint, and this skips the
         // perimeter walk for the great majority of candidates
-        if (arterialDistance(cand) < SKIRT_OUT) return false
+        if (arterialDistance(cand) < BUILDING_SETBACK) return false
         const spot = surfacePoint(cand, 0)
         // the same two conditions add() already enforces on every prop
         if (spot.length() < WATER_LEVEL + 0.48) return false
@@ -1747,10 +1812,11 @@ export function arterialDistance(dir: THREE.Vector3) {
 
 const CORRIDOR_STEP = 0.015
 /** guardrails and tufts stand down inside this half-width; footpaths replace them */
-// surfaced half-width 3.95, plus the <=0.455u the spline road drifts from the
-// great-circle arcs arterialDistance measures against (P37), plus margin —
-// at 4.15 the margin was 0.2u and scatter stood ON the carriageway
-export const CORRIDOR_SUPPRESS = 4.8
+// full shoulder reach 5.55 (SKIRT_OUT), plus the <=0.455u the spline road
+// drifts from the great-circle arcs arterialDistance measures against (P37),
+// plus margin. At 4.8 furniture planted at raw-terrain height stood buried
+// inside the raised embankment band the wider shoulder now covers.
+export const CORRIDOR_SUPPRESS = 6.2
 const ASPHALT_LIFT = 0.06
 const PAINT_LIFT = 0.12
 const MEDIAN_TOP = 0.2
@@ -1825,7 +1891,22 @@ const MAX_TWIST = 0.46
  * The verge apron reaches this far out, blending the deck edge into the ground.
  * Held at 0.6u beyond the footpath, as it was before the widening.
  */
-const SKIRT_OUT = FOOT_OUT + 0.6
+// ROAD_MAX_FILL (the 1.2u fill cap vs the natural ground) is owned by
+// terrain.ts since P47, alongside the profile it bounds.
+/**
+ * Lateral distance over which the shoulder smoothsteps from the footpath edge
+ * down to the natural ground, so remaining fill reads as an embankment rather
+ * than a wall (the old 0.6u linear face hit 63 degrees at full fill).
+ */
+const SHOULDER_FALLOFF = 1.6
+const SKIRT_OUT = FOOT_OUT + SHOULDER_FALLOFF
+/**
+ * Hard sprawl limit for the adaptive embankment (below). Sized for the worst
+ * measured edge drop (~1.4u) at a 1:2 slope; NOTE this exceeds SKIRT_OUT by
+ * 1.2u laterally, so where the drop is large the skirt reaches to 6.75u —
+ * beyond BUILDING_SETBACK (5.1) though still inside CORRIDOR_SUPPRESS (6.2).
+ */
+const SHOULDER_MAX = 2.8
 
 const CORRIDOR_COLORS = {
   asphalt: "#5a5a60",
@@ -1928,92 +2009,46 @@ export type CorridorMesh = {
 /**
  * Half-window of the deck's height smoothing, in corridor samples (~0.6u each),
  * and the light second pass that follows it.
- *
- * The corridor used to take terrainRadius() raw along its length: MAX_TWIST
- * clamps the cross-slope but nothing touched the ride. Measured on the shipped
- * profile that gave a crest-or-sag reversal every 8.2u and grade changes up to
- * 0.47 — a roller coaster, not a graded highway.
  */
-const CORRIDOR_SMOOTH = 12
 
-/** moving average over +-w samples of an open array, clamping at the ends */
-function runningMean(src: number[], w: number) {
-  if (w <= 0) return src.slice()
-  const out: number[] = []
-  for (let i = 0; i < src.length; i++) {
-    let sum = 0
-    let n = 0
-    for (let k = -w; k <= w; k++) {
-      const j = i + k
-      if (j < 0 || j >= src.length) continue
-      sum += src[j]
-      n++
-    }
-    out.push(sum / n)
-  }
-  return out
-}
+const _dryProbe = new THREE.Vector3()
 
-/** rolling maximum over +-w samples, clamping at the ends */
-function rollingMax(src: number[], w: number) {
-  const out: number[] = []
-  for (let i = 0; i < src.length; i++) {
-    let m = -Infinity
-    for (let k = -w; k <= w; k++) {
-      const j = i + k
-      if (j < 0 || j >= src.length) continue
-      if (src[j] > m) m = src[j]
-    }
-    out.push(m)
-  }
-  return out
+/**
+ * ONE dry rule for a corridor cross-section, shared by the mesh sampler and
+ * the ride sampler so the drawn road and the walkable road always agree.
+ */
+function corridorSampleDry(dir: THREE.Vector3, right: THREE.Vector3, ground: number) {
+  // the deck height itself must clear the water — near a crossing the graded
+  // terrain can read dry while the profile is still down in the gorge
+  if (ground < WATER_LEVEL + 0.3) return false
+  // tested against the real ground: a filled hollow must not let the road
+  // march out over water; the section reaches ±FOOT_OUT, so both verges too
+  if (terrainRadius(dir) < WATER_LEVEL + 0.48) return false
+  if (
+    terrainRadius(_dryProbe.copy(dir).addScaledVector(right, FOOT_OUT / ground).normalize()) <
+    WATER_LEVEL + 0.48
+  )
+    return false
+  if (
+    terrainRadius(_dryProbe.copy(dir).addScaledVector(right, -FOOT_OUT / ground).normalize()) <
+    WATER_LEVEL + 0.48
+  )
+    return false
+  // a deck well overhead carries this stretch (the level gorge viaducts) —
+  // don't draw the diving ghost road underneath it
+  const deck = bridgeSurface(dir)
+  if (deck !== null && deck > ground + 1) return false
+  return true
 }
 
 /**
- * Rideable deck height for one leg, one entry per sample.
- *
- * A smoothed UPPER ENVELOPE of the ground: rolling maximum, then a moving
- * average of it. The P41 pipeline (mean, then max against raw) kept the ride
- * clear of the ground but re-inserted a bump at EVERY crest above the mean —
- * playtest read it as "completely uneven, lots of up and down". The envelope
- * has no such bumps: crests live inside it, hollows are spanned.
- *
- * With the averaging half-window no wider than the max half-window, every
- * averaged term still contains raw[i] in its own max window, so the profile is
- * >= the ground at every sample by construction — smoothness without cutting.
- *
- * The window is sampled past both ends of the leg so neighbouring legs smooth
- * into each other and no crease forms at a station.
+ * The road's height profile is owned by terrain.ts since P47 (the ground is
+ * graded to it); this just samples `loopProfileAt` per leg step.
  */
-/**
- * The envelope may stand at most this far above the local mean ground. Uncapped
- * it reached 5.8u — wall-like causeways over every hollow. Capped, deep dips
- * are followed at the terrain's macro shape instead of being spanned.
- */
-const MAX_FILL = 1.2
-/** half-window of the mean ground the cap is measured against (~3.6u) */
-const CAP_SMOOTH = 6
-/**
- * Half-window of the final blend that removes the crease where cap meets
- * envelope (~3u). 3 left a 0.08 grade-change kink at hollow rims and two extra
- * crest/sag reversals; 5 restores the envelope's reversal count exactly, for
- * 0.08u of extra fill at the worst hollow.
- */
-const CAP_BLEND = 5
-
 function corridorProfile(tA: number, span: number, steps: number) {
-  const pad = CORRIDOR_SMOOTH * 2 + CAP_BLEND
-  const probe = new THREE.Vector3()
-  const raw: number[] = []
-  for (let i = -pad; i <= steps + pad; i++) {
-    loopDir(tA + (i / steps) * span, probe)
-    raw.push(terrainRadius(probe))
-  }
-  const envelope = runningMean(rollingMax(raw, CORRIDOR_SMOOTH), CORRIDOR_SMOOTH)
-  const ceiling = runningMean(raw, CAP_SMOOTH)
-  const capped = envelope.map((v, i) => Math.min(v, ceiling[i] + MAX_FILL))
-  const ridden = runningMean(capped, CAP_BLEND)
-  return ridden.slice(pad, pad + steps + 1)
+  const out: number[] = []
+  for (let i = 0; i <= steps; i++) out.push(loopProfileAt(tA + (i / steps) * span))
+  return out
 }
 
 /** the whole arterial cross-section, merged into one geometry per element */
@@ -2054,7 +2089,6 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
     const ahead = new THREE.Vector3()
     const behind = new THREE.Vector3()
     const fwd = new THREE.Vector3()
-    let run = 0
 
     for (let i = 0; i <= steps; i++) {
       const t = tA + (i / steps) * span
@@ -2070,7 +2104,6 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
       const right = new THREE.Vector3().crossVectors(fwd, dir).normalize()
       // the rideable profile, not raw ground: see corridorProfile
       const ground = deckProfile[i]
-      const wet = terrainRadius(dir)
       const centre = dir.clone().multiplyScalar(ground)
       // Break the median where a pillar's footing actually reaches into it,
       // measured box-to-band the way every clearance test has since P29 — the
@@ -2084,7 +2117,6 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
           break
         }
       }
-      if (i > 0) run += (span / steps) * ground
       samples.push({
         dir: dir.clone(),
         right,
@@ -2093,19 +2125,10 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
         skirtCapL: Infinity,
         skirtCapR: Infinity,
         ground,
-        dry:
-          // tested against the real ground: a filled hollow must not let the
-          // road march out over water
-          wet >= WATER_LEVEL + 0.48 &&
-          // the section reaches +-FOOT_OUT, so both verges must be dry too
-          terrainRadius(
-            dir.clone().addScaledVector(right, FOOT_OUT / ground).normalize(),
-          ) >= WATER_LEVEL + 0.48 &&
-          terrainRadius(
-            dir.clone().addScaledVector(right, -FOOT_OUT / ground).normalize(),
-          ) >= WATER_LEVEL + 0.48,
+        dry: corridorSampleDry(dir, right, ground),
         medianOk,
-        s: run,
+        // GLOBAL ride distance, not a per-leg run: dash windows key off this
+        s: loopWorldS(t),
       })
     }
 
@@ -2137,6 +2160,33 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
 
     legsData.push({ ai, samples, steps })
   })
+
+  // Requested P44 debug output — the cap, verified live on every build. There
+  // is no debug flag or HUD channel in this project, so console.log only.
+  {
+    let maxFill = 0
+    let over = 0
+    let maxGrade = 0
+    for (const leg of legsData) {
+      for (let i = 0; i < leg.samples.length; i++) {
+        const smp = leg.samples[i]
+        if (!smp.dry) continue
+        const fill = smp.ground - terrainRadius(smp.dir)
+        if (fill > maxFill) maxFill = fill
+        if (fill > ROAD_MAX_FILL + 1e-6) over++
+        const prev = leg.samples[i - 1]
+        if (i > 0 && prev.dry) {
+          const stepW = smp.dir.angleTo(prev.dir) * smp.ground
+          if (stepW > 1e-6) {
+            maxGrade = Math.max(maxGrade, Math.abs(smp.ground - prev.ground) / stepW)
+          }
+        }
+      }
+    }
+    console.log(
+      `[road] max fill ${maxFill.toFixed(2)}u (cap ${ROAD_MAX_FILL}), over-cap samples ${over}, max grade ${maxGrade.toFixed(2)}`,
+    )
+  }
 
   /**
    * Wedge trim. At sharp tour corners the incoming and outgoing stretches of
@@ -2193,7 +2243,7 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
       for (const sign of [1, -1] as const) {
         let firstEarlier = Infinity
         let firstAny = Infinity
-        for (let o = 0.5; o <= SKIRT_OUT + 1e-6; o += 0.5) {
+        for (let o = 0.5; o <= FOOT_OUT + SHOULDER_MAX + 1e-6; o += 0.5) {
           const pt = centre.clone().addScaledVector(s.right, sign * o)
           for (const sg of near) {
             if (distToSeg(pt, sg) >= FOOT_OUT - 0.05) continue
@@ -2248,40 +2298,102 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
         }
       }
     }
-    /** raw (unclamped) surface point at a lateral offset */
-    const groundPoint = (s: Sample, o: number) => {
-      const probe = s.dir.clone().addScaledVector(s.right, o / s.ground).normalize()
-      return probe.multiplyScalar(terrainRadius(probe))
-    }
-
     /**
      * Verge apron. The deck is graded, the land is not, so its outer edge sits
      * above or below the ground by a variable amount. This closes that step
      * with a sloped face — a cut bank where the land is higher, fill where it
      * is lower — instead of leaving a torn edge for terrain to show through.
      */
+    /**
+     * Point on the shoulder at lateral `o`: smoothstepped from the footpath's
+     * outer top down to the natural ground across SHOULDER_FALLOFF, so an
+     * embankment curves into the land instead of dropping as a flat wall.
+     *
+     * The vertex is placed with crossPoint's convention — lateral offset
+     * divided by the point's OWN height — so at f = 0 this reproduces the
+     * footpath's outer-top vertex exactly and the shoulder shares its edge
+     * with the footpath mesh (review caught a 0.03–0.33u crack when the two
+     * used different conventions). `fOverride` pins the trimmed outer edge to
+     * the ground (f = 1): a shoulder cut short by the hub wedge trim must
+     * still bury its edge in the terrain, not hang mid-blend in the air.
+     */
+    const shoulderPoint = (s: Sample, o: number, reach: number, fOverride?: number) => {
+      const probe = s.dir.clone().addScaledVector(s.right, o / s.ground).normalize()
+      const rawH = terrainRadius(probe)
+      const eProbe = s.dir
+        .clone()
+        .addScaledVector(s.right, (Math.sign(o) * FOOT_OUT) / s.ground)
+        .normalize()
+      const h =
+        fOverride === 1
+          ? rawH
+          : shoulderHeight(s.ground, terrainRadius(eProbe), rawH, Math.abs(o), reach)
+      return s.dir.clone().addScaledVector(s.right, o / h).normalize().multiplyScalar(h)
+    }
+
+    /** embankment reach for this sample/side — same probes the ride surface uses */
+    const skirtReach = (s: Sample, sign: 1 | -1) => {
+      const eProbe = s.dir
+        .clone()
+        .addScaledVector(s.right, (sign * FOOT_OUT) / s.ground)
+        .normalize()
+      const oProbe = s.dir
+        .clone()
+        .addScaledVector(s.right, (sign * SKIRT_OUT) / s.ground)
+        .normalize()
+      return shoulderReach(s.ground, terrainRadius(eProbe), terrainRadius(oProbe))
+    }
+
     const skirtSide = (s0: Sample, s1: Sample, sign: 1 | -1) => {
+      const reach0 = skirtReach(s0, sign)
+      const reach1 = skirtReach(s1, sign)
+      const rMax = Math.max(reach0, reach1)
       const trimmed = foldTrim(
         s0,
         s1,
-        Math.min(sign * FOOT_OUT, sign * SKIRT_OUT),
-        Math.max(sign * FOOT_OUT, sign * SKIRT_OUT),
+        Math.min(sign * FOOT_OUT, sign * (FOOT_OUT + rMax)),
+        Math.max(sign * FOOT_OUT, sign * (FOOT_OUT + rMax)),
         true,
       )
       if (!trimmed) return
       const inner = sign === 1 ? trimmed[0] : trimmed[1]
-      const outer = sign === 1 ? trimmed[1] : trimmed[0]
-      const i0 = crossPoint(s0, inner, FOOTPATH_TOP, edgeGround(s0, inner))
-      const i1 = crossPoint(s1, inner, FOOTPATH_TOP, edgeGround(s1, inner))
-      const o0 = groundPoint(s0, outer)
-      const o1 = groundPoint(s1, outer)
-      const c0 = groundColour(s0, outer)
-      const c1 = groundColour(s1, outer)
-      // wind by increasing lateral offset so normals face outward
-      if (sign === 1) {
-        skirt.quadC(i0, c0, o0, c0, o1, c1, i1, c1)
-      } else {
-        skirt.quadC(o0, c0, i0, c0, i1, c1, o1, c1)
+      const outerT = sign === 1 ? trimmed[1] : trimmed[0]
+      // each sample runs out to its own reach, capped by the wedge trim
+      const outFor = (reach: number) =>
+        sign === 1
+          ? Math.min(sign * (FOOT_OUT + reach), outerT)
+          : Math.max(sign * (FOOT_OUT + reach), outerT)
+      const o0max = outFor(reach0)
+      const o1max = outFor(reach1)
+      const pin0 = Math.abs(o0max) < FOOT_OUT + reach0 - 1e-4
+      const pin1 = Math.abs(o1max) < FOOT_OUT + reach1 - 1e-4
+      // three strips trace the smoothstep; one flat quad cannot curve
+      const STRIPS = 3
+      const rows0: THREE.Vector3[] = []
+      const rows1: THREE.Vector3[] = []
+      const cols0: THREE.Color[] = []
+      const cols1: THREE.Color[] = []
+      for (let k = 0; k <= STRIPS; k++) {
+        const a0 = inner + ((o0max - inner) * k) / STRIPS
+        const a1 = inner + ((o1max - inner) * k) / STRIPS
+        rows0.push(shoulderPoint(s0, a0, reach0, k === STRIPS && pin0 ? 1 : undefined))
+        rows1.push(shoulderPoint(s1, a1, reach1, k === STRIPS && pin1 ? 1 : undefined))
+        cols0.push(groundColour(s0, a0))
+        cols1.push(groundColour(s1, a1))
+      }
+      for (let k = 0; k < STRIPS; k++) {
+        // wind by increasing lateral offset so normals face outward
+        if (sign === 1) {
+          skirt.quadC(
+            rows0[k], cols0[k + 1], rows0[k + 1], cols0[k + 1],
+            rows1[k + 1], cols1[k + 1], rows1[k], cols1[k + 1],
+          )
+        } else {
+          skirt.quadC(
+            rows0[k + 1], cols0[k + 1], rows0[k], cols0[k + 1],
+            rows1[k], cols1[k + 1], rows1[k + 1], cols1[k + 1],
+          )
+        }
       }
     }
 
@@ -2335,10 +2447,43 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
       m.quad(b0L, t0L, t1L, b1L) // inner face
     }
 
+    /**
+     * A sample interpolated between two real ones, for cutting a dash exactly
+     * at its window edge instead of quantising to whole 0.6u segments (which
+     * drew dashes only in 0.6/1.2u lengths — the aliasing of P44). Caps take
+     * the conservative min of both parents; over-trimming a 0.12u-wide dash
+     * by a hair is invisible, an untrimmed one poking into a fold is not.
+     */
+    const lerpSample = (s0: Sample, s1: Sample, f: number): Sample => ({
+      dir: s0.dir.clone().lerp(s1.dir, f).normalize(),
+      right: s0.right.clone().lerp(s1.right, f).normalize(),
+      ground: s0.ground + (s1.ground - s0.ground) * f,
+      capL: Math.min(s0.capL, s1.capL),
+      capR: Math.min(s0.capR, s1.capR),
+      skirtCapL: Math.min(s0.skirtCapL, s1.skirtCapL),
+      skirtCapR: Math.min(s0.skirtCapR, s1.skirtCapR),
+      dry: true,
+      medianOk: true,
+      s: s0.s + (s1.s - s0.s) * f,
+    })
+
+    /** dash-window overlaps with [sA, sB], as fractions of the segment */
+    const dashSpans = (sA: number, sB: number) => {
+      const out: [number, number][] = []
+      if (sB <= sA + 1e-6) return out
+      for (let k = Math.floor(sA / DASH_PERIOD); k * DASH_PERIOD < sB; k++) {
+        const lo = Math.max(sA, k * DASH_PERIOD)
+        const hi = Math.min(sB, k * DASH_PERIOD + DASH_ON)
+        if (hi > lo + 1e-4) out.push([(lo - sA) / (sB - sA), (hi - sA) / (sB - sA)])
+      }
+      return out
+    }
+
     for (let i = 0; i < steps; i++) {
       const s0 = samples[i]
       const s1 = samples[i + 1]
       if (!s0.dry || !s1.dry) continue // bridges already carry the water crossings
+      const dashes = dashSpans(s0.s, s1.s)
 
       for (const sign of [-1, 1]) {
         const inner = sign * LANE_IN
@@ -2353,13 +2498,15 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
         const innerEdge = sign * (LANE_IN + MARK_HALF * 2)
         flat(paint, s0, s1, Math.min(inner, innerEdge), Math.max(inner, innerEdge), PAINT_LIFT)
 
-        // dashed divider between this carriageway's two lanes
-        const phase = s0.s % DASH_PERIOD
-        if (phase < DASH_ON) {
+        // dashed divider between this carriageway's two lanes, cut exactly
+        // at each dash window's edges
+        for (const [f0, f1] of dashes) {
+          const d0 = f0 <= 1e-6 ? s0 : lerpSample(s0, s1, f0)
+          const d1 = f1 >= 1 - 1e-6 ? s1 : lerpSample(s0, s1, f1)
           flat(
             paint,
-            s0,
-            s1,
+            d0,
+            d1,
             sign * LANE_MID - MARK_HALF,
             sign * LANE_MID + MARK_HALF,
             PAINT_LIFT,
@@ -2673,12 +2820,17 @@ type DeckSpan = {
   perp: THREE.Vector3
   bankA: number
   bankB: number
+  deckR: number
 }
 
 let _decks: DeckSpan[] | null = null
+let _decksSawNet = false
 
 function decks(): DeckSpan[] {
-  if (_decks) return _decks
+  // rebuilt if first queried before the network existed: arterial banks would
+  // have cached their raw-terrain fallback and kept the 1.2u handoff step
+  if (_decks && (_decksSawNet || !NET)) return _decks
+  _decksSawNet = !!NET
   const byId = new Map(ZONES.map((z) => [z.id, z]))
   const out: DeckSpan[] = []
   const probe = new THREE.Vector3()
@@ -2692,13 +2844,15 @@ function decks(): DeckSpan[] {
     const omega = a.angleTo(b)
     const perp = b.clone().addScaledVector(a, -a.dot(b))
     if (perp.lengthSq() < 1e-12) continue
+    const [bankA, bankB] = spanBanks(span, a, b, omega)
     out.push({
       span,
       a,
       n: new THREE.Vector3().crossVectors(a, b).normalize(),
       perp: perp.normalize(),
-      bankA: terrainRadius(arcPoint(a, b, omega, span.tA, probe)),
-      bankB: terrainRadius(arcPoint(a, b, omega, span.tB, probe)),
+      bankA,
+      bankB,
+      deckR: spanDeckR(span, bankA, bankB),
     })
   }
   _decks = out
@@ -2715,7 +2869,7 @@ export function bridgeSurface(dir: THREE.Vector3): number | null {
   for (const d of decks()) {
     const t = Math.atan2(dir.dot(d.perp), dir.dot(d.a))
     if (t < d.span.tA || t > d.span.tB) continue
-    const height = bridgeHeight(d.span, t, d.bankA, d.bankB)
+    const height = bridgeHeight(d.span, t, d.bankA, d.bankB, d.deckR)
     // lateral offset from the centreline, as a world distance at deck height
     const lateral = Math.abs(Math.asin(Math.max(-1, Math.min(1, dir.dot(d.n))))) * height
     if (lateral > d.span.halfWidth) continue
@@ -2752,18 +2906,20 @@ export const CIVIC_PLOTS: CivicPlot[] = [
   { id: "college", district: "tech", anchorZone: "samadhi", dir: [0.824, -0.524, 0.218], footprint: 20 },
   { id: "itpark", district: "tech", anchorZone: "samadhi", dir: [0.9201, -0.3883, 0.051], footprint: 20 },
   { id: "apartments", district: "industrial", anchorZone: "mill", dir: [0.173, 0.512, -0.841], footprint: 20 },
-  { id: "park", district: "green", anchorZone: "grove", dir: [-0.663, -0.747, -0.049], footprint: 20 },
+  // 20u could not clear the widened corridor from any reachable ring site
+  // (P45b, failed by 0.28u); 19u is the largest size that sites with the
+  // required 0.3u+ of true shoulder clearance. Anchor unmoved.
+  { id: "park", district: "green", anchorZone: "grove", dir: [-0.663, -0.747, -0.049], footprint: 19 },
   { id: "busstand", district: "transit", anchorZone: "bazaar", dir: [0.8613, 0.2795, -0.4244], footprint: 14 },
   { id: "cycleshop", district: "service", anchorZone: "workshop", dir: [-0.8402, -0.5365, 0.0787], footprint: 10 },
 ]
 
 /** clearances a reserved plot must keep, beyond its own radius */
 /**
- * Plot setback from the corridor centreline: the graded half-width at the
- * highway cross-section (4.55u) plus slack for the spline-vs-arc gap that
- * arterialDistance leaves. Was 3.9 against the old 5.4u road.
+ * Plot setback from the corridor centreline: the full shoulder reach (5.55u,
+ * SKIRT_OUT) plus slack for the spline-vs-arc gap arterialDistance leaves.
  */
-const PLOT_CORRIDOR = 4.55 + 0.65
+const PLOT_CORRIDOR = 5.55 + 0.65
 const PLOT_PILLAR = 0.5
 const PLOT_BUILDING = 2
 const PLOT_NPC = 1.5
@@ -3012,16 +3168,13 @@ function rideSamples(): RideSample[] {
       fwd.normalize()
       const right = new THREE.Vector3().crossVectors(fwd, dir).normalize()
       const ground = profile[i]
-      // the same water test buildCorridors uses, against the real ground: where
-      // it fails no corridor was built and the bridges take over
-      const wet = terrainRadius(dir)
-      const dry =
-        wet >= WATER_LEVEL + 0.48 &&
-        terrainRadius(dir.clone().addScaledVector(right, FOOT_OUT / ground).normalize()) >=
-          WATER_LEVEL + 0.48 &&
-        terrainRadius(dir.clone().addScaledVector(right, -FOOT_OUT / ground).normalize()) >=
-          WATER_LEVEL + 0.48
-      out.push({ dir: dir.clone(), right, ground, dry, leg })
+      out.push({
+        dir: dir.clone(),
+        right,
+        ground,
+        dry: corridorSampleDry(dir, right, ground),
+        leg,
+      })
     }
   })
   _ride = out
@@ -3029,18 +3182,6 @@ function rideSamples(): RideSample[] {
 }
 
 const _rideProbe = new THREE.Vector3()
-
-/**
- * How far in from the outer footpath edge the ride height blends back down to
- * the real ground. Without it the corridor simply stops: the surface is a lift
- * above graded ground on one side of the line and raw terrain on the other, and
- * crossing it snapped the player that whole distance in a single frame — worst
- * near the zone hubs, where the walk weaves in and out of the footprint dozens
- * of times a leg. Tapering costs a sink of at most FOOTPATH_TOP across the
- * outermost half-unit of a 7.9u road, and makes the seam continuous by
- * construction rather than by smoothing after the fact.
- */
-const RIDE_TAPER = 0.5
 
 /**
  * Height of the road surface under `dir`, or null off the corridor.
@@ -3073,38 +3214,75 @@ const _rideAB = new THREE.Vector3()
 const _ridePW = new THREE.Vector3()
 const _rideR = new THREE.Vector3()
 
+/** two legs run this close only where they converge on a hub */
+const HUB_OVERLAP_DOT = Math.cos(0.06)
+
 export function corridorSurface(dir: THREE.Vector3): number | null {
   const samples = rideSamples()
   let bestI = -1
   let bestDot = -2
+  // where two legs overlap near a hub the WALKABLE surface is the higher one
+  // (that is what the wedge-trimmed mesh shows) — nearest-leg-only answers
+  // popped 0.3-0.6u crossing the bisector between converging legs (measured)
+  let otherI = -1
+  let otherDot = -2
   for (let i = 0; i < samples.length; i++) {
-    const d = samples[i].dir.dot(dir)
+    const s = samples[i]
+    const d = s.dir.dot(dir)
     if (d > bestDot) {
+      if (bestI >= 0 && samples[bestI].leg !== s.leg && bestDot > otherDot) {
+        otherDot = bestDot
+        otherI = bestI
+      }
       bestDot = d
       bestI = i
+    } else if (s.leg !== (bestI >= 0 ? samples[bestI].leg : -1) && d > otherDot) {
+      otherDot = d
+      otherI = i
     }
   }
   if (bestI < 0) return null
+  const primary = corridorSurfaceAt(samples, bestI, dir)
+  // otherI can be stale if bestI later switched onto its leg mid-scan
+  if (otherI < 0 || otherDot < HUB_OVERLAP_DOT || samples[otherI].leg === samples[bestI].leg)
+    return primary
+  // the secondary only counts on a true segment hit: its snapped-endpoint
+  // fallback plateaus at the endpoint height with a polluted lateral frame,
+  // and taking a max against that stepped 0.15u at station seams (measured)
+  const secondary = corridorSurfaceAt(samples, otherI, dir, true)
+  if (primary === null) return secondary
+  if (secondary === null) return primary
+  return Math.max(primary, secondary)
+}
 
+function corridorSurfaceAt(
+  samples: RideSample[],
+  bestI: number,
+  dir: THREE.Vector3,
+  requireSegment = false,
+): number | null {
   // Interpolate along whichever adjacent segment the point projects into.
   // Snapping to the nearest sample changed the whole frame every 0.6u of
   // travel, and the resulting height steps were the P44 "screen dancing".
+  //
+  // The projection runs on the UNIT directions, not the 3D ground points: on a
+  // steep grade consecutive ground-point chords kink RADIALLY, the projection
+  // parameter jumps half a segment at the kink, and the ride surface stepped
+  // 0.26u mid-carriageway at the gorge approaches (measured). The unit-dir
+  // polyline has only the loop's own gentle tangential kinks.
   let s0 = samples[bestI]
   let s1 = s0
   let t = 0
-  _ridePW.copy(dir).multiplyScalar(s0.ground)
   for (const j of [bestI - 1, bestI + 1]) {
     if (j < 0 || j >= samples.length) continue
     const n = samples[j]
     if (n.leg !== s0.leg) continue
     const a2 = j < bestI ? n : samples[bestI]
     const b2 = j < bestI ? samples[bestI] : n
-    _rideC0.copy(a2.dir).multiplyScalar(a2.ground)
-    _rideC1.copy(b2.dir).multiplyScalar(b2.ground)
-    _rideAB.copy(_rideC1).sub(_rideC0)
+    _rideAB.copy(b2.dir).sub(a2.dir)
     const len2 = _rideAB.lengthSq()
     if (len2 < 1e-12) continue
-    const tt = _rideProbe.copy(_ridePW).sub(_rideC0).dot(_rideAB) / len2
+    const tt = _rideProbe.copy(dir).sub(a2.dir).dot(_rideAB) / len2
     if (tt >= 0 && tt <= 1) {
       s0 = a2
       s1 = b2
@@ -3112,30 +3290,102 @@ export function corridorSurface(dir: THREE.Vector3): number | null {
       break
     }
   }
+  if (s0 === s1) {
+    if (requireSegment) return null
+    // No segment contains the query. Beyond the END of a leg that is not an
+    // outside-corner wedge but open air — the snap used to hold the endpoint
+    // height as a phantom plateau past every station seam (0.15u step when it
+    // let go). Legs tile the loop, so the adjacent leg's coincident endpoint
+    // sample carries the seam instead. Interior corner wedges (both
+    // neighbours on this leg) still snap.
+    const prevSame = bestI > 0 && samples[bestI - 1].leg === s0.leg
+    const nextSame = bestI < samples.length - 1 && samples[bestI + 1].leg === s0.leg
+    if (!prevSame || !nextSame) return null
+  }
   if (!s0.dry || !s1.dry) return null
   const ground = s0.ground + (s1.ground - s0.ground) * t
+
+  // Lateral offset from the projection residual: subtract the point's
+  // along-segment component and measure what remains against a right vector
+  // orthogonalised to the segment. The old lerped-right asin estimate ignored
+  // the segment frame and read up to 0.65u short on curves — the mesh hung
+  // past where the ride surface ended (P41c corner overhang).
+  _rideC0.copy(s0.dir).lerp(s1.dir, t) // centreline dir at t (chord point)
+  _ridePW.copy(dir).sub(_rideC0) // residual, in radian-scale units
   const right = _rideR.copy(s0.right).lerp(s1.right, t)
+  if (s0 !== s1) {
+    _rideAB.copy(s1.dir).sub(s0.dir)
+    const len2 = _rideAB.lengthSq()
+    if (len2 > 1e-12) right.addScaledVector(_rideAB, -right.dot(_rideAB) / len2)
+  }
   if (right.lengthSq() < 1e-12) return null
   right.normalize()
-
-  // NOTE: P41c's corner overhang is NOT fixed here. Refining against the two
-  // neighbouring segments can only make this offset smaller, and the overhang is
-  // the case where it is already too small. Still open.
-  const o = Math.asin(Math.max(-1, Math.min(1, dir.dot(right)))) * ground
+  const o = _ridePW.dot(right) * ground
   const a = Math.abs(o)
-  if (a > FOOT_OUT) return null
-  const lift = rideLift(a)
+  if (a > FOOT_OUT + SHOULDER_MAX) return null
 
   // the probe direction IS the query point — no reconstruction error
   const raw = terrainRadius(dir)
+  if (a > FOOT_OUT) {
+    // the walkable shoulder: the SAME curve and reach the skirt mesh uses
+    const eDir = _rideProbe
+      .copy(dir)
+      .addScaledVector(right, (Math.sign(o) * FOOT_OUT - o) / ground)
+      .normalize()
+    const edgeRaw = terrainRadius(eDir)
+    const oDir = _rideProbe
+      .copy(dir)
+      .addScaledVector(right, (Math.sign(o) * SKIRT_OUT - o) / ground)
+      .normalize()
+    const reach = shoulderReach(ground, edgeRaw, terrainRadius(oDir))
+    if (a > FOOT_OUT + reach) return null
+    return shoulderHeight(ground, edgeRaw, raw, a, reach)
+  }
+  const lift = rideLift(a)
   const limit = a * Math.tan(MAX_TWIST)
-  const graded = ground + Math.max(-limit, Math.min(limit, raw - ground)) + lift
+  return ground + Math.max(-limit, Math.min(limit, raw - ground)) + lift
+}
 
-  // blend to the real ground over the last stretch, so the edge has no step
-  const inset = FOOT_OUT - a
-  if (inset >= RIDE_TAPER) return graded
-  const k = Math.max(0, inset / RIDE_TAPER)
-  return raw + (graded - raw) * k
+/** module-scope smoothstep for the shoulder curve */
+function smoothstep01(t: number) {
+  const c = Math.min(1, Math.max(0, t))
+  return c * c * (3 - 2 * c)
+}
+
+/**
+ * THE shoulder height curve — the only definition. Both the drawn skirt mesh
+ * and the walkable ride surface call this, so the two cannot drift apart.
+ * `edgeRaw` is the natural ground at the footpath's outer edge (the twist
+ * clamp anchors there); `pointRaw` the ground under the queried point.
+ */
+function shoulderHeight(
+  ground: number,
+  edgeRaw: number,
+  pointRaw: number,
+  a: number,
+  reach = SHOULDER_FALLOFF,
+) {
+  const edgeH = shoulderEdgeH(ground, edgeRaw)
+  const f = smoothstep01((a - FOOT_OUT) / reach)
+  return edgeH * (1 - f) + pointRaw * f
+}
+
+/** the footpath outer-top height the embankment descends from */
+function shoulderEdgeH(ground: number, edgeRaw: number) {
+  const limit = FOOT_OUT * Math.tan(MAX_TWIST)
+  return ground + Math.max(-limit, Math.min(limit, edgeRaw - ground)) + FOOTPATH_TOP
+}
+
+/**
+ * How far past the footpath edge the embankment reaches: 2x the drop to the
+ * natural ground (~1:2 average slope) — never narrower than SHOULDER_FALLOFF,
+ * never wider than SHOULDER_MAX. `outerRaw` is the ground probed at the
+ * nominal outer line (FOOT_OUT + SHOULDER_FALLOFF); both the skirt mesh and
+ * the ride surface size the shoulder with THIS function so they agree.
+ */
+function shoulderReach(ground: number, edgeRaw: number, outerRaw: number) {
+  const drop = shoulderEdgeH(ground, edgeRaw) - outerRaw
+  return Math.min(SHOULDER_MAX, Math.max(SHOULDER_FALLOFF, 2 * drop))
 }
 
 /**

@@ -15,7 +15,7 @@ import {
   type CorridorMesh,
   type PlacedProp,
 } from "@/lib/game/props"
-import { rng } from "@/lib/game/terrain"
+import { rng, terrainRadius } from "@/lib/game/terrain"
 import { toonGradient } from "@/lib/game/toon"
 import { KANNADA_FONT_STACK, makeSignTexture } from "@/lib/game/signage"
 
@@ -26,6 +26,73 @@ const EDGE = 0.035
 const SIGNAL_PERIOD = 3.5
 const LAMP_ON = 1
 const LAMP_OFF = 0.15
+
+/**
+ * A reserved plot, DRAPED onto the terrain. The old rigid sunk cylinder was
+ * placed flat at the centre height: on a sloped site (plots allow slope up to
+ * 0.3) the downhill rim hovered up to ~3u in the air — the floating octagons
+ * of the P47 screenshots. Every vertex now sits on the ground it covers.
+ */
+function CivicPad({ p }: { p: PlacedProp }) {
+  const PAD_SHOW = 0.02
+  const RIM_SHOW = 0.01
+  const geo = useMemo(() => {
+    const c = p.position.clone().normalize()
+    const R = p.position.length()
+    const t1 = new THREE.Vector3(0, 1, 0)
+    if (Math.abs(c.y) > 0.9) t1.set(1, 0, 0)
+    const u = new THREE.Vector3().crossVectors(t1, c).normalize()
+    const v = new THREE.Vector3().crossVectors(c, u).normalize()
+    const SECTORS = 8 // keeps the octagon look
+    const RINGS = 4
+    const dirAt = (rr: number, ang: number) =>
+      c
+        .clone()
+        .addScaledVector(u, (Math.cos(ang) * rr) / R)
+        .addScaledVector(v, (Math.sin(ang) * rr) / R)
+        .normalize()
+    const build = (r0: number, r1: number, rings: number, lift: number, color: THREE.Color) => {
+      const pos: number[] = []
+      const col: number[] = []
+      const idx: number[] = []
+      for (let ri = 0; ri <= rings; ri++) {
+        const rr = r0 + ((r1 - r0) * ri) / rings
+        for (let s = 0; s <= SECTORS; s++) {
+          const ang = (s / SECTORS) * Math.PI * 2
+          const d = dirAt(rr, ang)
+          const h = terrainRadius(d) + lift
+          pos.push(d.x * h, d.y * h, d.z * h)
+          col.push(color.r, color.g, color.b)
+        }
+      }
+      const W = SECTORS + 1
+      for (let ri = 0; ri < rings; ri++) {
+        for (let s = 0; s < SECTORS; s++) {
+          const a = ri * W + s
+          idx.push(a, a + W, a + 1, a + 1, a + W, a + W + 1)
+        }
+      }
+      return { pos, col, idx }
+    }
+    const disc = build(0, p.scale, RINGS, PAD_SHOW, new THREE.Color(p.colorA))
+    const rim = build(p.scale, p.scale * 1.06, 1, RIM_SHOW, new THREE.Color(p.colorB))
+    const g = new THREE.BufferGeometry()
+    const pos = [...disc.pos, ...rim.pos]
+    const col = [...disc.col, ...rim.col]
+    const base = disc.pos.length / 3
+    const idx = [...disc.idx, ...rim.idx.map((i) => i + base)]
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3))
+    g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3))
+    g.setIndex(idx)
+    g.computeVertexNormals()
+    return g
+  }, [p])
+  return (
+    <mesh geometry={geo} receiveShadow>
+      <meshToonMaterial vertexColors gradientMap={toonGradient} />
+    </mesh>
+  )
+}
 
 /** red -> green -> amber, cycling. Discs sit on the head's +Z face. */
 function TrafficSignal({ p }: { p: PlacedProp }) {
@@ -91,34 +158,9 @@ function PropInstance({ p }: { p: PlacedProp }) {
   const quat = new THREE.Quaternion(p.quaternion.x, p.quaternion.y, p.quaternion.z, p.quaternion.w)
 
   switch (p.kind) {
-    case "civic-pad": {
-      // A reserved plot, not a building. p.scale carries the disc radius, so
-      // every world dimension is divided back out to stay the same size whatever
-      // the plot's size. No outline and no collision — it is ground, not an object.
-      //
-      // The slab is sunk so only PAD_SHOW stands proud: sitting the full 0.08u
-      // on top of the terrain made a rim the player's feet clipped through on
-      // approach. Buried like the guardrail posts and palace walls, it reads as
-      // paving rather than a step.
-      const PAD_SHOW = 0.02
-      const PAD_THICK = 0.08
-      const RIM_SHOW = 0.01
-      const RIM_THICK = 0.06
-      const s = p.scale
-      return (
-        <group position={pos} quaternion={quat} scale={s}>
-          <mesh position={[0, (PAD_SHOW - PAD_THICK / 2) / s, 0]} receiveShadow>
-            <cylinderGeometry args={[1, 1, PAD_THICK / s, 8]} />
-            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
-          </mesh>
-          {/* rim, a touch wider and a touch lower, reading as a kerb round the plot */}
-          <mesh position={[0, (RIM_SHOW - RIM_THICK / 2) / s, 0]}>
-            <cylinderGeometry args={[1.06, 1.06, RIM_THICK / s, 8]} />
-            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
-          </mesh>
-        </group>
-      )
-    }
+    case "civic-pad":
+      // draped onto the ground it covers — see CivicPad
+      return <CivicPad p={p} />
     case "stall":
       return (
         <group position={pos} quaternion={quat} scale={p.scale}>

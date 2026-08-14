@@ -1,20 +1,24 @@
 # PROJECT_CONTEXT.md
 
-Complete technical context for **Dak Wala — Village Courier**, an original 3D
-delivery-courier game on a tiny round planet modelled after an Indian small town.
+Complete technical context for **Bharat Mitra — Village Courier** (formerly
+"Dak Wala"), an original 3D delivery-courier game on a tiny round planet
+modelled as a mini-Bengaluru. Zone identities are governed by
+[WORLD_DESIGN.md](WORLD_DESIGN.md).
 
 This document is written so a new AI assistant can work on the codebase without
 opening the source files. All values, function names, and paths below are actual,
-verified against the source and against numerical simulation of the terrain
-functions (not estimated).
+verified against the source and against numerical simulation of the terrain and
+prop functions (not estimated).
 
 - **Repo root:** `d:\claude_abeto_indian_version\dak-wala-courier-game\abeto_project`
-- **Current branch:** `day1/critical-bug-fixes` (main branch is `main`)
+- **Current branch:** `day3/environment-camera` (main branch is `main`)
 - **Stack:** Next.js 16.3.0 (App Router, Turbopack) · React 19 · TypeScript 5.7.3 ·
   three 0.185.1 · @react-three/fiber 9.7.0 · @react-three/drei 10.7.7 ·
   zustand 5.0.14 · Tailwind CSS 4.3.3
 - **Dev server:** `npm run dev` → http://localhost:3000
-- **Doc generated:** 2026-08-06
+- **Doc generated:** 2026-08-06 · **rewritten 2026-08-13** after the 1.6× world
+  scale migration, the metro/highway/collision/civic systems, and instanced
+  rendering.
 
 ---
 
@@ -26,57 +30,44 @@ Line counts are actual file lengths.
 ```
 abeto_project/
 ├── AGENTS.md                        (auto-generated agent guidance, re-written by `next dev`)
-├── CLAUDE.md                        (1 line: `@AGENTS.md` — imports AGENTS.md)
+├── CLAUDE.md                        (2 lines: imports AGENTS.md and WORLD_DESIGN.md)
 ├── PROJECT_CONTEXT.md               (this file)
-├── README.md                        34 lines
-├── .gitignore
-├── components.json                  21 lines   (shadcn config)
-├── next-env.d.ts                     6 lines   (Next.js ambient types, do not edit)
-├── next.config.mjs                  11 lines
-├── package.json                     43 lines
-├── package-lock.json                          (npm lockfile)
-├── postcss.config.mjs                8 lines
-├── tsconfig.json                    33 lines
-├── tsconfig.tsbuildinfo                       (UNTRACKED build cache — should be gitignored)
+├── WORLD_DESIGN.md                  (zone identity bible — mini-Bengaluru; governs all environment work)
+├── README.md
+├── next.config.mjs · postcss.config.mjs · tsconfig.json · components.json · package.json
 │
 ├── app/
 │   ├── globals.css                 163 lines
 │   ├── layout.tsx                   49 lines
-│   └── page.tsx                     23 lines
+│   └── page.tsx                     27 lines
 │
 ├── components/
 │   ├── game/
-│   │   ├── HUD.tsx                  81 lines
-│   │   ├── NpcLayer.tsx            100 lines
-│   │   ├── Player.tsx              217 lines
-│   │   ├── PropsLayer.tsx          210 lines
-│   │   └── Scene.tsx                61 lines
+│   │   ├── GlobeIntro.tsx          507 lines   (cinematic globe intro, India map, stage guide)
+│   │   ├── HUD.tsx                 136 lines   (quest UI + zone-entry banner)
+│   │   ├── Minimap.tsx             226 lines   (canvas radar, no React per tick)
+│   │   ├── NpcLayer.tsx            156 lines
+│   │   ├── Player.tsx              427 lines   (movement, collision, ride height, camera)
+│   │   ├── PropsLayer.tsx        1,185 lines   (per-kind renderers, instanced fleets, corridors, trains)
+│   │   └── Scene.tsx               109 lines
 │   └── ui/
 │       └── button.tsx               58 lines   (UNUSED — nothing imports it)
 │
 ├── lib/
 │   ├── game/
-│   │   ├── data.ts                 533 lines   ← single source of truth, imports nothing
-│   │   ├── props.ts                135 lines
-│   │   ├── store.ts                146 lines
-│   │   └── terrain.ts              338 lines
-│   └── utils.ts                      6 lines   (only consumer is button.tsx)
+│   │   ├── data.ts                 545 lines   ← single source of truth, imports nothing
+│   │   ├── playerState.ts           14 lines   (mutable singleton for DOM overlays)
+│   │   ├── props.ts              3,497 lines   ← placement + metro + corridors + bridges + collision + civic
+│   │   ├── signage.ts              136 lines   (bilingual canvas sign textures)
+│   │   ├── store.ts                153 lines
+│   │   ├── terrain.ts              572 lines   (includes METRO_LOOP since P46)
+│   │   └── toon.ts                  16 lines   (shared 4×1 gradient DataTexture)
+│   └── utils.ts                      6 lines
 │
 └── public/
-    ├── apple-icon.png
-    ├── icon-dark-32x32.png
-    ├── icon-light-32x32.png
-    ├── icon.svg
-    ├── placeholder-logo.png
-    ├── placeholder-logo.svg
-    ├── placeholder-user.jpg
-    ├── placeholder.jpg
-    └── placeholder.svg
+    ├── geo/world.geo.json · geo/india-states.geo.json   (GlobeIntro map data)
+    └── (icons, placeholder images)
 ```
-
-> There is **no** `hooks/` directory, no test suite, no ESLint config file, and no
-> CI configuration, despite `package.json` declaring a `lint` script (`eslint .`)
-> and `components.json` declaring a `@/hooks` alias.
 
 ---
 
@@ -84,752 +75,434 @@ abeto_project/
 
 | File | Purpose |
 |---|---|
-| `app/layout.tsx` | Root layout: HTML shell, `Metadata` (title "Dak Wala — Village Courier"), favicon set, `Viewport` light/dark, mounts `<Analytics/>` only when `NODE_ENV === 'production'`. |
-| `app/page.tsx` | The only route: full-viewport `<Canvas shadows camera={{fov:55,near:0.1,far:300}}>` wrapping `<Scene/>` in `<Suspense>`, with `<HUD/>` overlaid. |
-| `app/globals.css` | Tailwind 4 + `tw-animate-css` + `shadcn/tailwind.css` imports, full oklch light/dark design-token set, `@layer base` resets. Game visuals use none of these tokens. |
-| `components/game/Scene.tsx` | Assembles the 3D world: sky colour `#bfe0ee`, fog, hemisphere + shadow-casting directional light, `<Planet/>`, `<Water/>`, `<PropsLayer/>`, `<NpcLayer/>`, `<Player/>`. |
-| `components/game/Player.tsx` | Player character: keyboard input, spherical-gravity movement, analytic ground collision, third-person camera, nearest-NPC proximity detection, `E`-key interaction dispatcher, and the courier body mesh. |
-| `components/game/NpcLayer.tsx` | Renders all 20 NPCs, snaps each to the terrain surface, orients them to the surface normal, draws three body variants (dog / peacock / humanoid) plus a `<Html>` nameplate, quest `!` marker, and "Press E" hint. |
-| `components/game/PropsLayer.tsx` | Calls `buildProps()` once and renders each `PlacedProp` via a `switch` on `p.kind` into hand-built three.js primitive groups (11 prop types). |
-| `components/game/HUD.tsx` | 2D DOM overlay: title card, active-quest tracker, completed counter, controls legend, dialogue box, "Press E to talk" prompt, and the coloured quest toast with a 3200 ms auto-dismiss. |
-| `components/ui/button.tsx` | shadcn/base-ui `Button` with `cva` variants — **dead code, imported nowhere.** |
-| `lib/game/data.ts` | All static content and tuning: `Vec3`, `Zone`/`ZONES`, `Npc`/`NPCS`, `Quest`/`QuestStep`/`QUESTS`, `EMOJIS`, `PHYSICS`, `INITIAL_CHARACTER`, `WATER_LEVEL`. Imports nothing. |
-| `lib/game/terrain.ts` | Procedural round-world terrain: value noise/fBm, RBF anchor interpolation, road arcs, `terrainRadius()`, vertex colouring, planet geometry builder, and placement helpers. |
-| `lib/game/props.ts` | `buildProps()` — deterministic per-zone placement of the 11 decorative prop kinds, with palettes and the underwater-cull guard. |
-| `lib/game/store.ts` | Zustand store: quest progress, carried parcel, dialogue and toast state, `interact()` / `advanceDialogue()`, plus the `useNpcHasQuest()` selector hook. |
-| `lib/utils.ts` | `cn()` — `twMerge(clsx(...))` class-name helper. |
-| `next.config.mjs` | `typescript.ignoreBuildErrors: true` and `images.unoptimized: true`. |
-| `tsconfig.json` | `strict: true`, `noEmit`, `moduleResolution: "bundler"`, path alias `@/* → ./*`. |
-| `components.json` | shadcn config: style `base-nova`, rsc true, aliases for components/utils/ui/lib/hooks, lucide icons. |
-| `postcss.config.mjs` | Single plugin: `@tailwindcss/postcss`. |
-| `README.md` | Human-facing intro, run instructions, control list, and a short structure summary. |
-| `AGENTS.md` / `CLAUDE.md` | Agent instructions injected by `next dev`; tells agents to read `node_modules/next/dist/docs/` before writing Next.js code. |
+| `app/page.tsx` | The only route: `<GlobeIntro/>` gate, then full-viewport `<Canvas shadows>` wrapping `<Scene/>`, with `<HUD/>` + `<Minimap/>` overlaid. |
+| `components/game/GlobeIntro.tsx` | Cinematic spinning-globe start screen with India highlighted (official depiction), synchronized entrance, "Chalo" button, 5-stage guide. |
+| `components/game/Scene.tsx` | Assembles the world: sky, fog, hemisphere + shadow directional light (2048² map, ±40u frustum), rotating cloud group, `<Planet/>`, `<Water/>`, layers. |
+| `components/game/Player.tsx` | Movement on the sphere, prop collision (capsule vs `propCollision`), ride height (`corridorSurface`/`bridgeSurface`/`groundOrDeck`), third-person camera with ground clamp + LOS pull-in, zone-entry detection, NPC proximity, `E` dispatcher. |
+| `components/game/NpcLayer.tsx` | Renders 20 NPCs standing on `groundOrDeck` (road-aware), 3 body variants, occlusion-tested DOM nameplates. |
+| `components/game/PropsLayer.tsx` | Renders every `PlacedProp` (switch on kind), instanced fleets (`BridgeRails`, `MetroPillars`), corridor meshes with polygonOffset, animated `TrafficSignal`, 2 metro `Train`s. |
+| `components/game/Minimap.tsx` | 150px canvas radar at 10fps from `playerState` — zones, villagers, pulsing quest target pinned to rim. |
+| `components/game/HUD.tsx` | Quest tracker, dialogue box, toast, controls, zone-entry banner (reads `currentZone` from the store). |
+| `lib/game/data.ts` | All static content: `ZONES` (Bengaluru names), `NPCS`, `QUESTS`, `PHYSICS`, `INITIAL_CHARACTER`, `WATER_LEVEL = 33.92`. Imports nothing. |
+| `lib/game/terrain.ts` | Analytic spherical heightfield: fBm noise, 39-anchor RBF, 15 road arcs, **the metro loop spline (`METRO_LOOP`, moved here in P46 so grading and corridor share one geometry)**, `terrainRadius()`, toon colouring, planet geometry, `npcSurfacePosition`, `slopeAt`. |
+| `lib/game/props.ts` | The world-building module: `buildProps()` (1,079 props), road furniture, bridges, metro network, corridor meshes, civic pads, plus the runtime queries `propCollision`, `corridorSurface`, `bridgeSurface`, `groundOrDeck`. |
+| `lib/game/signage.ts` | Canvas-rendered Kannada/English sign textures for `zone-signboard`. |
+| `lib/game/playerState.ts` | `{ position, forward }` mutable singleton bridging R3F → DOM (Minimap). |
+| `lib/game/store.ts` | Zustand: quest progress, carrying, dialogue/toast, `nearbyNpcId`, `currentZone`, `interact()`/`advanceDialogue()`. |
+| `lib/game/toon.ts` | Shared 4-step gradient map for every `meshToonMaterial`. |
 
 ---
 
-## 3. Key data types and interfaces in `lib/game/data.ts`
+## 3. World scale — the 1.6× migration (P22/P22b)
 
-`data.ts` is the dependency root — it imports nothing and everything else depends on it.
+The planet was expanded 1.6× in every world-unit dimension. Everything below
+reflects post-migration values.
 
-```ts
-export type Vec3 = [number, number, number]
+- `WATER_LEVEL = 33.92` (was 21.2).
+- All `ZONES[].center` and `NPCS[].position` vectors ×1.6 (they are terrain
+  anchors — `makeAnchors()` uses `|v|` as the anchor radius, so magnitude matters).
+- `INITIAL_CHARACTER.position = [-16, 57.6, 22.4]`, `relativeCameraPosition [0, 1.36, 6.25]`.
+- `PHYSICS`: `jumpForce 0.16675`, `gravity -0.01173`, `sprintSpeed 1.4946`.
+- Player: `MOVE_SPEED 0.154`, `TALK_DISTANCE 2.4` (characters did not grow).
+- Terrain noise: lumps ×2.16, detail ×0.672, ridges ×1.2; `FALLBACK_R 29.12`;
+  ocean anchors 29.44; shoreline constants ×1.6; `ROAD_BAND 0.0365625`.
+- Angular constants deliberately NOT scaled: zone-entry radii, `distFrac × 0.03125`
+  prop offsets, `RIBBON_CLEAR`, `STATION_LEAD`.
 
-export type Zone = {
-  id: string        // stable key, e.g. "bazaar"
-  text: string      // display name, e.g. "Sarafa Bazaar"
-  center: Vec3      // world-space point; DIRECTION is used, magnitude is an anchor radius
-  radius: number    // 5.5 .. 18 — see BUG-102, this is NOT in the same unit as it is used
-}
-
-export type NpcKind =
-  | "clerk" | "worker" | "engineer" | "flowerseller" | "grandmother"
-  | "mechanic" | "manager" | "kid" | "boatman" | "priest"
-  | "musician" | "sadhu" | "chaiwala" | "dog" | "peacock"
-// 15 kinds. NpcLayer only branches on "dog" and "peacock"; the other 13 all
-// render the identical humanoid mesh. The field is otherwise decorative.
-
-export type Npc = {
-  id: string            // referenced by QuestStep.id
-  name: string          // shown on the nameplate and in dialogue
-  color: string         // hex — used as the HEAD/skin colour
-  kind: NpcKind
-  outfit: string        // hex — body capsule colour
-  hair: string          // hex — hair cap colour
-  position: Vec3        // authored world position; doubles as a terrain anchor
-  texts: string[]       // idle barks; one is chosen at random when no quest applies
-  talkDistance?: number // DEAD FIELD — never read anywhere (BUG-105)
-}
-
-export type QuestStep = {
-  id: string        // the NPC id that this step must be delivered to
-  texts: string[]   // dialogue lines, advanced one per E press
-  extraData: {
-    uiTitle: string        // toast heading, e.g. "Package Received"
-    uiIcon: string         // DEAD FIELD — stored in the toast, never rendered (BUG-107)
-    uiText: string         // toast body / objective text
-    uiColor: string        // toast background+border hex
-    receiveModel?: string  // sets `carrying` to this string on step completion
-  }
-}
-
-export type Quest = {
-  id: string
-  description: string  // shown in the HUD quest tracker
-  steps: QuestStep[]   // executed strictly in array order
-}
-```
-
-Also exported: `EMOJIS` (a 10-entry `as const` string tuple — **entirely unused**),
-`PHYSICS`, `INITIAL_CHARACTER`, `WATER_LEVEL`.
+**Measured terrain (160×160 directions):** min radius **31.36**, max **53.52**,
+mean **38.95**, land fraction **79.7%** (above `WATER_LEVEL`).
 
 ---
 
-## 4. How the game store works — `lib/game/store.ts`
+## 4. Terrain — `lib/game/terrain.ts`
 
-A single zustand store created with `create<GameState>((set, get) => ({...}))`,
-exported as **`useGameStore`**. There is no persistence, no middleware, and no
-devtools — refreshing the page resets all progress.
+Analytic heightfield: `terrainRadius(dir)` is the single source of truth for the
+mesh, all placement, and all collision. 39 RBF anchors (20 NPCs w=1, 9 zones
+w=1.35, 10 ocean dirs w=0.85, σ=0.4).
 
-### State shape
+**Roads:** `buildRoads()` holds **15 great-circle arcs** — the original 11 plus
+four added in P28 to complete the arterial loop (`samadhi-grove`,
+`haveli-workshop`, `workshop-beach`, `temple-mill`, each width **1.4** so their
+fully-flattened core covers the highway cross-section). `roadDistance(dir)`
+normalises by `width × ROAD_BAND`.
 
-```ts
-type GameState = {
-  npcQuestIndex: Record<string, { questId: string; stepIndex: number } | "done">
-  activeQuestId: string | null
-  carrying: string | null          // e.g. "letter" | "toolkit" | "sweets" | ...
-  dialogue: { npcId, npcName, lines: string[], lineIndex: number } | null
-  toast:    { title, icon, text, color } | null
-  nearbyNpcId: string | null
-  completedQuests: string[]
-  setNearbyNpc(id: string | null): void
-  interact(npcId: string): void
-  advanceDialogue(): void
-  closeToast(): void
-}
-```
+**Road flattening (P27/P46):** `flat = road < 1 ? 0.28 : road < 2.6 ? ramp : 1`
+against the painted arcs, **and** (P46) a second suppression band measured from
+the metro loop itself: `loopAngle(dir) × base` in world units, fully flat
+inside `LOOP_FLAT_CORE 4.4`, ramping to 1 at `LOOP_FLAT_RAMP 9`. The arcs
+disagree with the drawn corridor by up to ~0.5u laterally and their flat core
+never covered the surfaced width — this band does. Rock-branch colouring in
+the 4.5–8u verge band fell 21.9% → 14.5% (ambient dry land is 33%).
 
-Initial values: `npcQuestIndex: {}`, `activeQuestId: null`, `carrying: null`,
-`dialogue: null`, `toast: null`, `nearbyNpcId: null`, `completedQuests: []`.
+**`METRO_LOOP` (P46, moved from props.ts):** the closed CatmullRom spline
+through the 9 zone centres — tour order (`planLoop` 2-opt), great-circle
+control seeding (`LOOP_CONTROL_STEP 0.12`), even resample (`LOOP_SAMPLE
+0.02`), `zoneT` arc positions. Lives here because `terrainRadius` grades along
+it; props.ts imports it (`buildNetwork` consumes it directly). `loopAngle(dir)`
+is the coarse-then-refined nearest-sample angular distance.
 
-> **Naming trap:** the inline comment calls `npcQuestIndex` "which quest / step each
-> npc is currently offering", but it is keyed by **`quest.id`**, not by NPC id.
-> Read it as `questProgress`.
+**Corridor grading (P47) — the ground meets the road.** The road's height
+profile is owned by terrain.ts now: `profileGrid()` builds it over the loop
+samples from `naturalRadius` (the landform WITHOUT grading — envelope →
+10×[smooth→clamp into ground+`ROAD_MAX_FILL 1.2`]), and the public
+`terrainRadius()` blends the natural ground toward a kernel-weighted average
+of that profile: fully the road bed inside `GRADE_FULL 4.4`, feathered out by
+`GRADE_OUT 11` (wide, or the feather itself trips the rock colouring). The
+kernel spans BOTH legs at hub convergences so the ground never jumps
+allegiance. Guards, each one a measured failure: ground under the surfaced
+corridor is capped at the local profile (grass through asphalt in sags),
+wet-crossing profile samples are excluded from the average (they cut dry
+banks under the waterline), and **water is never graded at all** (the blend
+once raised an earthen land bridge across a gorge floor). This ended the
+permanent-embankment look: edge gap at the footpath edge max 1.44 → 0.64u
+with the p90 equal to the 0.16u kerb height, rock-band colouring 10.9% (was
+21.9%; ambient 33%). Exports: `loopProfileAt(t)`, `loopWorldS(t)`,
+`ROAD_MAX_FILL`.
 
-### `findStepForNpc(npcId, npcQuestIndex, carrying)` — module-private
-
-The core resolver. Iterates `QUESTS` **in array order** and returns the first match:
-
-1. Skip the quest if `npcQuestIndex[quest.id] === "done"`.
-2. `stepIndex = progress ? progress.stepIndex : 0` (absent ⇒ step 0, quest not started).
-3. `step = quest.steps[stepIndex]`; skip if missing or `step.id !== npcId`.
-4. **Carry gate:** if `stepIndex > 0`, read `prevModel = quest.steps[stepIndex-1].extraData.receiveModel`.
-   If `prevModel` is set and `carrying !== prevModel`, skip this quest.
-5. Return `{ quest, step, stepIndex }`, else `null` after the loop.
-
-### `interact(npcId)`
-
-- Returns immediately if `dialogue` is already open (prevents re-entry).
-- Looks up the NPC in `NPCS`; returns if not found.
-- If `findStepForNpc` matched → opens dialogue with `found.step.texts`.
-- Else if `npc.texts.length > 0` → opens dialogue with **one randomly chosen** idle bark.
-- Else → nothing happens (silent NPCs: `mill-worker-c`, `street-dog`, `peacock`).
-
-### `advanceDialogue()`
-
-- No-op if `dialogue` is null.
-- If `lineIndex < lines.length - 1` → increment `lineIndex` and return.
-- Otherwise the dialogue has ended, so it re-runs `findStepForNpc` to resolve the step:
-  - `isLast = stepIndex === quest.steps.length - 1`
-  - `npcQuestIndex[quest.id] = isLast ? "done" : { questId, stepIndex: stepIndex + 1 }`
-  - `carrying = step.extraData.receiveModel ?? (isLast ? null : carrying)`
-  - `activeQuestId = isLast ? null : quest.id`
-  - `completedQuests` gains `quest.id` when `isLast`
-  - `toast` is populated from `step.extraData` (title/icon/text/color)
-  - `dialogue = null`
-- If no step matched (a pure idle bark) → just `dialogue = null`.
-
-### `useNpcHasQuest(npcId)` — exported hook
-
-`useGameStore(s => !!findStepForNpc(npcId, s.npcQuestIndex, s.carrying))`.
-Drives the amber `!` badge above an NPC's head in `NpcLayer`. Because it calls
-`findStepForNpc` inside the selector, it re-evaluates on **every** store change.
+**Colouring:** rock when `slopeAt > 0.55` (dark > 0.75), snow-less caps above
+55.04, painted road ribbon `road < 1.5`, sand fringes, hand-painted grain.
+`slopeAt` has its own scratch vector (`_slopeV`) — sharing `_rv` with
+`roadDistance` once pinned half the map at slope 1.0.
 
 ---
 
-## 5. How terrain generation works — `lib/game/terrain.ts`
+## 5. The metro network (P17.2 / P36 / P37)
 
-The planet is an **analytic heightfield in spherical coordinates**: for any unit
-direction there is a closed-form surface radius. Nothing raycasts; the player
-controller evaluates the same function the mesh was built from, so collision is exact.
+Flagship feature. Built by `buildNetwork()` in props.ts at `buildProps()` time.
 
-### 5.1 Noise stack
+- **Zone-anchored closed spline:** `CatmullRomCurve3` (centripetal) through the
+  9 zone centres in tour order (2-opt TSP from bazaar), with extra control
+  points seeded along each leg's great circle so the curve hugs the arcs
+  (median separation **0.000u**, max 0.455u) and only rounds the corners at
+  hubs. Resampled to even arc steps; loop length **9.878 rad ≈ 395 world
+  units**. **Since P46 the spline itself is terrain.ts's `METRO_LOOP`** (the
+  grading follows it); `buildNetwork` destructures `{dirs, n, step, total,
+  zoneT}` from it and keeps everything from the deck profile down.
+- **Stations are sited along the finished curve** (not control points): the
+  P17.2 slide-search (dry, prop-clear, NPC-clear; road-ribbon constraint relaxes
+  first) evaluated by arc length. 9 stations, all currently pass 2.
+- **Deck profile:** ground → `max(_, WATER_LEVEL)` → ±7-sample smooth →
+  `+DECK_RISE 8` with `DECK_MIN_CLEAR 6.4` / `DECK_WATER +4.8` floors →
+  `DECK_MAX_STEP 0.4` slope limiter (wrapped passes).
+- **132 `metro-pillar`** — one per step, none skipped (nudged off villagers and
+  temple sightline cones; since P46 footings may stand in water like bridge
+  piers, and a last-resort nudge waives only prop clearance — 12 track
+  segments used to hang unsupported, the longest bare run 13u over a gorge).
+  132 `metro-track` segments, 9 `metro-station`.
+- **2 articulated trains** (`Train index 0/1`), 3 coaches each, every coach
+  solved at its own curve parameter (`deckPoint`), velocity-continuous
+  smoothstep schedule (`buildSchedule`): dwell 3.5s, ramp 2.2s, cruise 0.14 —
+  full cycle **121.9s**. Headlight on lead coach, windows dim while dwelling.
+- Exports: `loopDir(t)`, `deckRadius(t)`, `deckPoint(t)`, `metroTrainState(time,
+  index)`, `metroStats()`, `METRO_ZONE_IDS`, `ARTERIAL_PAIRS`.
 
-- `hash3(x, y, z)` — integer hash → `[0, 1)`.
-- `smooth(t)` — `t*t*(3-2*t)` smoothstep.
-- `valueNoise(x, y, z)` — trilinear-interpolated `hash3` over the 8 lattice corners, remapped to `[-1, 1]`.
-- `fbm(x, y, z, octaves = 4)` — amplitude ×0.5 and frequency ×2.07 per octave, normalised by total amplitude.
+---
 
-### 5.2 Anchors — `makeAnchors()`
+## 6. The highway corridor system (P23 → P46)
 
-Radial-basis anchors define the large landforms. Each is `{ dir, r, w }`:
+Dual carriageways along all 9 metro legs, riding the **same spline** as the
+viaduct (P36, owned by terrain.ts since P46), so the pillar footings sit
+dead-centre in the median (max lateral offset 0.0007u).
 
-| Source | Count | Weight `w` | Radius `r` |
-|---|---|---|---|
-| Every entry in `NPCS` (`n.position`) | 20 | `1` | `|position|` |
-| Every entry in `ZONES` (`z.center`) | 9 | `1.35` | `|center|` |
-| Hardcoded `oceanDirs` array | 10 | `0.85` | forced to `18.4` |
-
-Total 39 anchors, computed once at module load into `const ANCHORS`.
-The 10 ocean directions are:
-`[0.2,-0.95,0.24]`, `[0.62,-0.5,0.6]`, `[-0.7,0.2,-0.68]`, `[0.86,-0.2,0.47]`,
-`[-0.35,-0.75,-0.56]`, `[0.1,0.55,0.83]`, `[0.75,0.45,0.48]`, `[-0.9,0.35,-0.26]`,
-`[0.3,-0.3,0.9]`, `[-0.55,-0.55,0.63]`.
-
-Constants: `SIGMA = 0.4`, `FALLBACK_R = 18.2`, `FALLBACK_W = 0.09`.
-
-### 5.3 Roads — `buildRoads()` / `roadDistance(dir)`
-
-11 great-circle arcs between zone pairs, each `{ a, b, n, width }` where `n = a × b`:
-
-```
-bazaar–beach 0.9 · beach–temple 0.7 · bazaar–samadhi 0.85 · samadhi–ghat 0.8
-ghat–grove 0.8 · grove–workshop 0.7 · grove–mill 0.85 · mill–ghat 0.8
-haveli–bazaar 0.9 · haveli–grove 0.75 · bazaar–ghat 0.8
-```
-
-`roadDistance(dir)` returns the **normalised** distance to the nearest arc: it
-projects `dir` onto each road plane, tests whether the projection lies inside the
-arc segment, takes the perpendicular angle if inside or the endpoint angle if
-outside, then divides by `road.width * 0.045`. Result `< 1` means "on the road".
-Starts at `9` (effectively infinity).
-
-### 5.4 `baseRadius(dir)` — Gaussian RBF interpolation
+**Cross-section (P40/P40b), half-widths from the centreline:**
 
 ```
-num = FALLBACK_R * FALLBACK_W;  den = FALLBACK_W
-for each anchor:
-  theta = acos(clamp(dir · anchor.dir))
-  w     = anchor.w * exp(-(theta / SIGMA)^2)
-  num  += w * anchor.r;  den += w
-return num / den
+median   0 – 0.55   (+0.20 raised; 0.7×0.7 pillar footings fit with ≥0.055u margin at any rotation)
+carriageway 0.55 – 3.15  (+0.06; TWO 1.30u lanes per side)
+footpath 3.15 – 3.95  (+0.16 raised)
+shoulder 3.95 – (3.95 + reach)  (ADAPTIVE since P46: reach = clamp(2×drop,
+                       SHOULDER_FALLOFF 1.6, SHOULDER_MAX 2.8) — a ~1:2
+                       embankment sized by `shoulderReach()` from the actual
+                       edge-to-ground drop; smoothstep to natural ground,
+                       vertex-coloured, walkable. 16.6% of sides widen past
+                       the old fixed 5.55u line, to at most 6.75u)
+surfaced width 7.90u · graded width 11.10–13.50u
 ```
 
-The fallback term keeps the function defined on the far side of the planet.
+**Markings (P46):** solid edge lines at 0.55 and 3.15 (continuous per dry
+stretch), dashed divider at 1.85 — 0.12u wide, 0.55u dashes / 1.4u period,
+paint 0.06u above the asphalt. Dashes are cut **exactly at their window
+edges** (interpolated sub-segment quads — they used to quantise to whole 0.6u
+segments) and the phase runs on a **global surface-arc-length** (`loopWorldS`,
+radial descent included), so it never resets at a leg seam. Measured: 510
+dashes, median 0.542u, 92% within ±0.10 of nominal (outliers sit on the
+steep gorge-rim faces).
 
-### 5.5 `terrainRadius(dir)` — the authoritative surface function
+**Height profile (P41/P45/P46/P47):** computed ONCE around the whole closed
+loop, owned by **terrain.ts** since P47 (`loopProfileAt` — see §4: the ground
+is graded to it), and interpolated by every consumer (`corridorProfile` per
+leg, `rideSamples`, bridge banks). **Punch-through 0.00%**, over-cap 0; the
+`[road]` console line now reads fill vs the GRADED ground (max ~0.66u — the
+land carries the rest). `MAX_TWIST 0.46` clamps cross-slope. Station-seam
+ride steps: worst **0.0135u** (was 0.0318u). One dry rule
+(`corridorSampleDry`) is shared by the mesh and ride samplers; it also skips
+stretches sitting >1u under a bridge deck, so no ghost road dives beneath the
+level gorge viaducts.
 
-```ts
-const base   = baseRadius(dir)
-const road   = roadDistance(dir)
-const flat   = road < 1 ? 0.15 : road < 1.9 ? 0.15 + 0.85*((road-1)/0.9) : 1
-const lumps  = fbm(x*5.1,  y*5.1,  z*5.1,  3) * 1.35
-const detail = fbm(x*15.3, y*15.3, z*15.3, 3) * 0.42
-const ridges = (1 - Math.abs(fbm(x*3.2+11, y*3.2+5, z*3.2+3, 2))) * 0.75
-let r = base + (lumps + detail) * flat + ridges * flat * (base > 25 ? 1 : 0.35)
+**Overlap control (P43):** per-sample fold caps (local turn radius) plus a
+global **wedge trim** — any lateral reach inside the band of an earlier,
+non-neighbouring stretch is surrendered (deterministic priority), so exactly
+one surface survives at hub corners (0 z-fighting pairs; skirt yields to any
+foreign band). Corridor materials carry `polygonOffset(-1,-1)` against the
+planet mesh.
 
-// beach flattening near the shoreline
-if (r < WATER_LEVEL + 1.1) {
-  const t = Math.max(0, (r - (WATER_LEVEL - 1.6)) / 2.7)
-  r = WATER_LEVEL - 1.6 + t*t*2.7
-}
-return r
-```
+**Geometry:** one merged `MeshBuf` per element per leg — 45 meshes,
+~21,000 triangles (the shoulder is 3 smoothstep strips per side).
+`CORRIDOR_SUPPRESS 6.2` stands guardrails, grass tufts **and utility poles**
+down within the corridor + shoulder (measured: 0 scatter props on either).
 
-`flat` suppresses noise to 15 % along roads, producing carved flat routes.
-`ridges` is doubled on high ground (`base > 25`) to make the temple mountain craggy.
-The final clamp means the **absolute minimum radius is `WATER_LEVEL - 1.6 = 19.60`**.
+**Bridges (P18/P32/P40/P46):** every wet stretch on every road gets a deck —
+5 spans: ghat-grove 8.4u, grove-mill 16.7u, haveli-bazaar 18.8u,
+samadhi-grove 16.0u, workshop-beach 17.4u (the last two are arterial crossings
+at 3.95u half-width; local-road spans stay 1.44u). `BridgeSpan.halfWidth`
+drives deck mesh, rails and the walkable surface. **Arterial spans since P46:**
+banks sample the corridor's own profile (`spanBanks` → `loopProfileAt` +
+`ASPHALT_LIFT − DECK_TOP`), the flat section spans **level with the lower
+bank** (`spanDeckR` — the two crossings are gorges; the old water-level deck
+dove ~12u below its own banks), and the ramps extend until the ramp foot is
+dry across the full ±3.95u cross-section plus one corridor-sample overlap
+(the corridor drops whole segments while a verge probe is wet, which used to
+leave a 1.1u cliff neither surface covered). **P47:** ramps additionally walk
+uphill past any approach steeper than `APPROACH_GRADE 0.35` (max 0.3 rad per
+side) — the bridge swallows the ski-jump rim descents instead of the road
+riding them. Handoff now: worst true discontinuity **0.023u** (was 1.12u).
+Piers still stand on the lakebed/gorge floor and stretch to the deck.
 
-**Measured over 4000 evenly distributed directions:**
+---
 
-| Metric | Value |
-|---|---|
-| Minimum radius | **19.60** |
-| Maximum radius | **33.37** |
-| Fraction below `WATER_LEVEL` (21.2) | **25.7 %** (1026 / 4000) |
-| Maximum ocean depth | 1.6 units |
+## 7. Player, collision, and ride height (P31 → P44)
 
-`radiusAt(v)` is the convenience wrapper: `terrainRadius(v.normalize())`.
+`Player.tsx` constants: capsule `PLAYER_RADIUS 0.34` × `PLAYER_HEIGHT 1.8`,
+`COLLIDE_PASSES 3`, `MAX_PUSH 0.15` (per-frame correction ≤ one walking step),
+`DECK_SNAP 0.4`, `ROAD_SNAP 1.1`.
 
-### 5.6 Colouring — `terrainColor(dir, r, target)`
+**Prop collision — `propCollision(pos, r, h, hit)` in props.ts:** flat scan of
+**560 colliders** built once from `COLLIDER_SPECS` (box / posts / shaft / rail
+shapes for palace, gopuram, temple-court, mill-block, workshop-shed, stall,
+haveli-arch, metro-pillar, bridge-pier, bridge-rail, mango-tree, banyan,
+peepal-tree, guardrail). 3D broad-phase reject **before** tangent-plane
+flattening (an antipodal rail once registered as a hit). ~1–2.4 µs/call.
+Player resolves road-first, bridge-wins ground: slide along the surface
+tangent, never a hard stop.
 
-Palette `C`: `deepSand #c9a876`, `sand #e0c191`, `grass #7ea34f`, `grassDark #5e8339`,
-`grassLight #9cbf66`, `rock #ab8f72`, `rockDark #8a6f55`, `road #c17a4a`,
-`roadEdge #d7a878`, `snowless #c9b48f`.
+**Ride height (P46 rewrite):** `corridorSurface(dir)` projects the query onto
+the centreline segment **in unit-direction space** (3D ground-point chords
+kink radially on grades — the projection parameter used to jump half a segment
+there) and reads the lateral offset from the projection **residual** against a
+segment-orthogonalised right vector (the old lerped-right `asin` was up to
+0.65u short on curves — the P41c corner overhang). Where two legs converge on
+a hub it evaluates both and returns the higher (what the trimmed mesh shows);
+a snapped endpoint is honoured only inside a leg (beyond a leg's end the
+adjacent leg's coincident sample takes over — the snap used to plateau 0.15u
+past every station seam). Band lifts ramp over `KERB_RAMP 0.3`; beyond the
+footpath it rides the shoulder via `shoulderHeight()`/`shoulderReach()`, the
+same curve and reach the skirt mesh is built from, ending on natural ground
+at 3.95 + reach. `bridgeSurface(dir)` covers decks + ramps per span width.
+`groundOrDeck(dir)` = terrain raised to road/bridge — used by player ground,
+NPC placement, NPC hit-test (same call: BUG-101's lesson), and all three camera
+probes (clearance ×2 + LOS march). Player stands exactly on the drawn asphalt
+(0.00% sunk >0.1u).
 
-Branching:
-1. `r < WATER_LEVEL + 0.55` → `deepSand` below water, `sand` above.
-2. `slope > 0.62 || r > 33.2` → `rock`, or `rockDark` when `slope > 0.8`; lerp toward `snowless` above 34.4.
-3. Otherwise grass, shaded by `fbm(...*9.3, 2)` toward `grassLight`/`grassDark`, plus a sand fringe below `WATER_LEVEL + 1.5`.
-4. Road overlay when `road < 1.5 && r > WATER_LEVEL + 0.3` — 0.92 lerp to `road` on the arc, feathered `roadEdge` outside.
-5. A final `offsetHSL(0, 0, grain)` with `grain = fbm(...*42, 2) * 0.05`.
+**Camera:** trailing lerp, ground clamp at `groundOrDeck + 0.96`, 8-sample LOS
+march (also `groundOrDeck`, so embankments block sight), pull-in/ease-out.
 
-`slopeAt(dir, r)` samples `terrainRadius` at two tangent-offset directions
-(`eps = 0.012`), forms the gradient magnitude, scales by `0.9` and clamps to 1.
-It is exported but has no external consumer.
+---
 
-### 5.7 `buildPlanetGeometry(detail = 52)`
+## 8. Prop placement — `buildProps()` (1,079 props, 29 kinds)
 
-Creates `THREE.IcosahedronGeometry(1, detail)`, then for each vertex normalises the
-position, evaluates `terrainRadius`, writes back `dir * r`, and fills a `Float32Array`
-colour attribute via `terrainColor`. Finishes with `computeVertexNormals()`.
-**`Scene.tsx` calls it with `detail = 64`**, which yields 40 962 vertices — each
-requiring a full 39-anchor RBF evaluation plus several fBm calls, so first paint is
-the dominant startup cost.
+Order matters: zone props → road furniture → bridges → metro → civic pads.
+Deterministic; same world every load.
 
-### 5.8 Placement helpers
+- `add(kind, zone, ang, distFrac, scale, seed, npcAware?)` — angular offset
+  `distFrac × 0.03125` (BUG-102 fixed: `zone.radius` no longer enters).
+- **Siting safeguards accumulated over the sessions:** `npcClearance` (≥1.92u),
+  `propClearance` (`BULKY_KINDS` need 5.6u), `FOOTPRINT` box-vs-corridor search
+  for palace/workshop-shed (set back beyond `SKIRT_OUT`), temple sightline
+  cones (no pillar within 4u/±45° of gopuram/temple-court entrances), pillar
+  nudge windows (`PILLAR_NUDGES`, wide variant for sightline cones).
+- **Zone builds:** KR Market stalls+umbrellas, Bengaluru Palace (+arch, P12.3),
+  Nandi Betta temple ensemble (gopuram/court/Nandi/stairs, P19), single giant
+  banyan at Dodda Alada Mara (P12.1), Binny Mills blocks, ghat steps, etc.
+- **Road furniture:** guardrails (terrain-conforming: `aux` carries the ground
+  under each post, rail runs down the grade — P33), utility poles + catenary
+  wires (`WIRE_MAX_SPAN 14.4`), grass tufts, traffic signals, 9 bilingual
+  `zone-signboard`s (canvas textures from signage.ts).
+- **Civic plots (P39/P40b/P46):** `CIVIC_PLOTS` — 7 reserved pads
+  (hospital 14u @haveli, college 20u @samadhi, itpark 20u, apartments 20u
+  @mill, **park 19u @grove** (shrunk from 20u in P46 — the only size that
+  clears the widened corridor; sites with 0.85u of true shoulder clearance,
+  anchor unmoved), busstand 14u @bazaar, cycleshop 10u @workshop).
+  Ring-search siting clears corridor (`PLOT_CORRIDOR 6.2`), pillars, buildings,
+  villagers, water, slope ≤ 0.3, other plots. Rendered as `civic-pad` —
+  sunk octagonal paver discs (0.02u proud). `civicPlotReport()` exposes the
+  siting table. **All 7 place.**
+  Buildings use their own `BUILDING_SETBACK 5.1` (decoupled from the skirt);
+  note the P46 adaptive shoulder can reach 6.75u laterally where the drop is
+  large — beyond BUILDING_SETBACK and 0.55u beyond `CORRIDOR_SUPPRESS 6.2`.
 
-| Export | Behaviour | Used by |
+Prop census (live, post-P46): bridge-rail 276, grass-tuft 161, bridge-deck 138,
+metro-track 132, metro-pillar 132, guardrail 81, bridge-pier 32,
+utility-pole 21, wire 12, mango-tree 11, stall 10, market-umbrella 10,
+zone-signboard 9, metro-station 9, civic-pad 7, mill-block 6, ghat-steps 6,
+lamp-post 5, peepal-tree 5, flag 4, traffic-signal 3, temple-steps 2, and one
+each of palace, haveli-arch, workshop-shed, gopuram, temple-court,
+nandi-statue, banyan. (`temple-dome` was removed in P39 as an orphan.)
+
+---
+
+## 9. Rendering — `PropsLayer.tsx` (P42 instancing)
+
+- **Instanced fleets:** `bridge-rail` (was 1,088 draw calls → **3**
+  InstancedMesh: posts/top/low) and `metro-pillar` (was 690 → **5**: footing,
+  height-scaled shaft, cap + 2 drei `<Outlines>` hulls — drei shares
+  `instanceMatrix` by reference; the shaft's outline is omitted because drei's
+  outline shader lacks the inverse-transpose normal correction under
+  non-uniform scale). Matrices baked once; three auto-computes fleet bounding
+  spheres, so culling stays correct. Scene ≈ 2,200 draw calls (was ~4,000).
+- Everything else renders per-prop through the `PropInstance` switch with
+  `meshToonMaterial` + shared `toonGradient`, drei `<Outlines>` ink
+  (`EDGE 0.035` — see backlog: possibly sub-pixel).
+- `Corridors` renders the 45 merged corridor meshes (`vertexColors` for the
+  skirt, `polygonOffset -1`).
+- Art direction: bright flat toon look (P13/P14) — sky `#bfe0ee`-family,
+  4-step gradient map, ink outlines, rotating clouds.
+
+---
+
+## 10. Store, quests, HUD, minimap
+
+Unchanged mechanics from Day 1 (see §11–12 of the git history for details):
+zustand store with `findStepForNpc` carry-gate resolver, 5 quests / 13 steps,
+single `carrying` slot (BUG-103 still open). Additions since:
+`currentZone` + `setCurrentZone` (zone-entry banner, hysteresis 0.21/0.28 rad
+checked every 30 frames in Player), `playerState` singleton feeding the
+canvas Minimap (10fps, sqrt-spread radar, quest target pinned to rim as a
+compass).
+
+---
+
+## 11. Verification methodology
+
+Every measured figure in this document was produced by compiling
+`lib/game/{data,terrain,props,signage}.ts` plus a driver with
+`npx tsc --module esnext --target es2020 --moduleResolution bundler
+--skipLibCheck`, writing `{"type":"module"}` beside the output, appending
+`.js` to relative import specifiers, and running with `node`. Rendered-geometry
+claims (overlaps, draw calls) were measured by raycasting the actual
+`BufferGeometry` output of `buildCorridors()` / counting `<mesh>` emissions
+per `PropInstance` case.
+
+---
+
+## 12. Current bug / backlog state
+
+Severity: **P0** breaks content · **P1** clearly wrong · **P2** polish/debt.
+
+### Fixed since the original document
+
+| ID | Was | Fix |
 |---|---|---|
-| `surfacePoint(dir, offset = 0)` | `dir * (terrainRadius(dir) + offset)` | `props.ts` |
-| `rng(seed)` | LCG `s = (s*1664525 + 1013904223) >>> 0`, returns `s / 2^32` | `props.ts` |
-| `randomDirInCap(center, maxAngle, rand)` | Uniform direction in an angular cap, using `tan(d)` for correct spacing | **nothing — dead code** |
-| `surfaceQuaternion(dir, spin)` | Rotates `+Y` onto `dir`, then spins about local Y | `props.ts`, `NpcLayer.tsx` |
+| BUG-003 | NPCs floated/sank | snap to `terrainRadius` (now `groundOrDeck`). |
+| BUG-101 | 4 NPCs unreachable, quest-offering dead | shared `npcSurfacePosition` / `groundOrDeck` for render AND hit-test. |
+| BUG-102 | props flung tens of degrees from their zone | `distFrac × 0.03125` angular offset; `zone.radius` removed from the formula. |
+| BUG-104 | 14 props culled underwater | obsolete — consequence of 102/106. |
+| BUG-106 | ghat zone fully submerged | zone lifted above the waterline (P11). |
+| BUG-006 | nameplates visible through the planet | occlusion march in NpcLayer. |
+| (P25–P28) | corridor punch-through, rock stripes | MAX_TWIST 0.46, skirts, flat-ramp widening, road-list sync. |
+| (P35–P37) | 0/98 pillars in median, road missed zones | corridor on the metro spline; spline re-anchored on zone centres. |
+| (P41–P44) | road chatter, player under asphalt, screen judder, causeway walls | envelope profile + fill cap, `corridorSurface` ride height, interpolated lookup, kerb ramps. |
+| (P42) | 40–50 fps | instanced rails/pillars: scene ~4,000 → ~2,200 draw calls. |
+| (P46) | corridor-to-bridge handoff ~1.2u step | arterial banks from the loop profile, gorge decks level with the lower bank, ramps extended to full-cross-section-dry + overlap: worst true step **0.023u**. |
+| (P46) | `corridorSurface` corner overhang + gorge-grade ride jumps + station-seam plateaus | unit-direction segment projection, residual-based lateral offset, two-leg max at hubs, no snap past a leg's end. Station seams 0.0318 → **0.0097u**. |
+| (P46) | rock stripes flanking the corridor (21.9% of the verge band) | terrain flattening driven by the loop spline itself (`LOOP_FLAT_CORE 4.4` / `RAMP 9`): 14.5% (ambient is 33%). |
+| (P46) | 12 metro-track segments unsupported (13u bare run over a gorge) | pillar footings may stand in water; last-resort nudge waives prop clearance only. 132/132 supported. |
+| (P46) | dash aliasing (0.6u quantised) + per-leg phase resets | exact sub-segment dash windows on a global surface-arc-length. |
+| (P46) | park civic plot failed to site | footprint 20 → 19u; sites with 0.85u shoulder clearance, anchor unmoved. |
+| (P47) | the whole network rode a permanent 1.2u embankment over unmoving ground | terrain graded to the road profile (§4): edge gap max 1.44 → 0.64u, p90 = kerb height. |
+| (P47) | SP Road signboard stood mid-carriageway | signboards walk outward until clear of the corridor (all 9 placed, ≥6.5u off centreline). |
+| (P47) | civic pads hovered off sloped sites (~3u rim float) | pads draped vertex-by-vertex onto the terrain (CivicPad in PropsLayer). |
+| (P47) | ghost road diving under the gorge viaducts | shared `corridorSampleDry` skips stretches >1u below a deck; ramps swallow >0.35 grades. |
 
-> Note `randomDirInCap` uses `Math.tan(d)` for the tangent offset — the mathematically
-> correct form. `props.ts` does **not** use this helper and offsets linearly instead,
-> which is the root of BUG-102.
+### Open
 
----
-
-## 6. How props are placed — `lib/game/props.ts`
-
-### Types
-
-```ts
-export type PropKind =
-  | "stall" | "haveli-arch" | "temple-dome" | "mill-block" | "ghat-steps"
-  | "mango-tree" | "workshop-shed" | "market-umbrella" | "peepal-tree"
-  | "lamp-post" | "flag"
-
-export type PlacedProp = {
-  kind: PropKind
-  position: THREE.Vector3
-  quaternion: THREE.Quaternion
-  scale: number
-  colorA: string
-  colorB: string
-  seed: number
-}
-```
-
-### Palette
-
-`PALETTE: Record<string, [string, string][]>` keyed by zone id. `bazaar` has four
-options (`#d97b3a/#f2d9a8`, `#c25959/#f2e6d0`, `#3f7f8c/#f2e6d0`, `#9c6ea0/#f2e6d0`);
-every other zone has exactly one pair. `paletteFor(zoneId, r)` falls back to
-`PALETTE.bazaar` for unknown ids and indexes with `Math.floor(r() * len) % len`.
-
-### `buildProps(): PlacedProp[]`
-
-The internal `add(kind, zoneId, angleOffset, distFrac, scale, seed)` closure:
-
-```ts
-const zone = byId.get(zoneId); if (!zone) return
-const center  = new THREE.Vector3(...zone.center).normalize()
-const tangent = Math.abs(center.y) > 0.9 ? (1,0,0) : (0,1,0)
-const t1 = tangent × center   (normalised)
-const t2 = center  × t1       (normalised)
-const dist = distFrac * zone.radius * 0.045          // ← see BUG-102
-const dir  = (center + t1*cos(ang)*dist + t2*sin(ang)*dist).normalize()
-const pos  = surfacePoint(dir, 0)
-const quat = surfaceQuaternion(dir, ang + Math.PI)
-const [a, b] = paletteFor(zoneId, rng(seed))
-if (pos.length() < WATER_LEVEL + 0.3) return          // ← underwater cull guard
-props.push({ kind, position: pos, quaternion: quat, scale, colorA: a, colorB: b, seed })
-```
-
-Placement is fully deterministic — the same props appear on every load.
-
-### The authored placement calls
-
-| Zone | Calls | Seeds |
+| ID | Sev | Item |
 |---|---|---|
-| bazaar | 10 × `stall` at `ang = i/10*2π`, `distFrac 1.6`; 10 × `market-umbrella` at `ang+0.15`, `1.9`; 2 × `lamp-post` (0.4/0.6, 2.4/0.6); 1 × `flag` (1.0/0.3) | 100–109, 200–209, 150, 151, 152 |
-| haveli | 1 × `haveli-arch` (0/0.9, scale 1.6); 2 × `lamp-post` (±0.6/1.3); 1 × `flag` (0/1.7, scale 1.2) | 300–303 |
-| mill | 6 × `mill-block` at angles `[0, 0.5, 1.0, 1.6, 2.2, 2.8]`, `distFrac 1.3 + (i%2)*0.3`, scale 1.3 | 400–405 |
-| workshop | 1 × `workshop-shed` (0/0.6, scale 1.2); 1 × `lamp-post` (1.4/1.2) | 500, 501 |
-| temple | 1 × `temple-dome` (0/0.2, scale 1.8); 2 × `flag` (±0.9/0.9, scale 1.3) | 600–602 |
-| ghat | 6 × `ghat-steps` at `i/6*2π`, `distFrac 1.2` | 700–705 |
-| grove | 16 × `mango-tree`, `rng(42)` drives angle, `distFrac 0.3 + r*1.6`, scale `0.8 + r*0.5` | 800–815 |
-| samadhi | 5 × `peepal-tree` at `i/5*2π`, `distFrac 1.3`, scale 1.4 | 900–904 |
-| beach | 6 × `mango-tree`, `rng(77)` drives angle and `distFrac 0.5 + r*1.3`, scale 0.6 | 1000–1005 |
-
-**71 props are authored. 57 actually render. 14 are silently discarded by the guard.**
-
-Verified cull tally (simulated against the real `terrainRadius`):
-
-| Zone | Kept | Culled |
-|---|---:|---:|
-| bazaar | 23 | 0 |
-| beach | 5 | 1 |
-| **ghat** | **2** | **4** |
-| **grove** | **9** | **7** |
-| haveli | 4 | 0 |
-| **mill** | **4** | **2** |
-| samadhi | 5 | 0 |
-| temple | 3 | 0 |
-| workshop | 2 | 0 |
-| **TOTAL** | **57** | **14** |
-
-Rendered counts by kind: `stall 10`, `market-umbrella 10`, `mango-tree 14` (of 22),
-`lamp-post 5`, `peepal-tree 5`, `mill-block 4` (of 6), `flag 4`, `ghat-steps 2` (of 6),
-`haveli-arch 1`, `temple-dome 1`, `workshop-shed 1`.
+| BUG-103 | **P0** | Single `carrying` slot — concurrent quests soft-lock permanently. |
+| BUG-110 | P1 | Held keys latch when the tab loses focus (no blur/visibility reset). |
+| BUG-112 | P2 | Ganesh, Sheru, peacock have no dialogue — `E` gives zero feedback. |
+| BUG-105/107/109/111/113–119 | P2 | As originally documented (dead fields, uiIcon unrendered, no swim state, first-match quest resolver, toast eats a keypress, ignoreBuildErrors, per-frame allocations in NpcFigure, dead exports, tsbuildinfo untracked, no persistence). |
+| NEW | P1 | **Metro viaduct deck is not in `groundOrDeck`** — camera clamps/LOS ignore it; prime suspect if black-screen reports persist. |
+| NEW | P2 | 66 zone-core props (stalls, ghat steps, trees, 6 NPCs incl. Amma at 0.18u) sit inside the road's graded band — the corridor runs through zone centres by design; needs a taper-through-hubs or acceptance decision. |
+| NEW | P2 | `corridorSurface` still ignores the hub wedge trim (the ride reports a phantom higher surface where the other leg's mesh was trimmed away — asphalt-vert parity p99 0.088u, worst 0.341u at one temple corner; the broad >0.05 population is the intentional kerb-ramp smoothing). |
+| NEW | P2 | `ROAD_PAIRS` in props.ts hand-duplicates `buildRoads()` in terrain.ts (already caused one stale-list bug); same for `BRIDGE_ARTERIAL_HALF_WIDTH` vs `FOOT_OUT`, `MEDIAN_HALF` vs `LANE_IN`. The metro loop itself is no longer duplicated (terrain.ts owns `METRO_LOOP` since P46) — only the painted-arc list remains. |
+| NEW | P2 | The gorge viaducts (P46) span level with the LOWER bank; the higher-bank ramp carries the height difference over its own length — grade fine today (banks near-equal) but unchecked if the profile shifts. 39/510 dashes are off-nominal on the steep gorge-rim faces. |
+| NEW | P2 | drei `<Outlines>` default path offsets by `thickness` **pixels**; `EDGE 0.035` may be sub-pixel — if confirmed by eye, ~800 outline draw calls are deletable with no visual change. |
+| NEW | P2 | Remaining instancing candidates: bridge-deck (408 calls), metro-track (396), grass-tuft, guardrail, utility-pole. |
+| DESIGN | — | Zone rebuilds per WORLD_DESIGN.md: `samadhi` (should be SP Road electronics lane, is a peepal grove), `beach` (should be a stepped kere, is palm trees), plus stale NPC/quest dialogue naming the old world. |
 
 ---
 
-## 7. How the player controller works — `components/game/Player.tsx`
+## 13. `WATER_LEVEL`, `ZONES`, `NPCS`, `QUESTS`, `PHYSICS`
 
-Module constants (note these **shadow** the `PHYSICS` block rather than reading it):
-`MOVE_SPEED = 0.11`, `TURN_SPEED = 2.6`, `TALK_DISTANCE = 2.4`.
+### `WATER_LEVEL = 33.92`
 
-### Refs (no React state — nothing here triggers re-render)
+Ocean sphere radius. Consumers: Scene water mesh; terrain shoreline flattening
+(floor `−2.56`), sand colouring, road-paint suppression; props culls
+(`+0.48`), corridor/bridge wet detection (`+0.3` / `WET_MARK +0.4`), metro
+deck floor (`+4.8`).
 
-`groupRef` (outer transform), `bodyRef` (bob/lean), `position` (init from
-`INITIAL_CHARACTER.position` = `[-10, 36, 14]`, `|p| = 39.90`), `velocity`,
-`forward` (init `(1,0,0)`), `grounded`, `camPos`, `stepPhase`.
-
-Store subscriptions are deliberately minimal — only `setNearbyNpc` and `carrying`.
-
-### `useKeys()`
-
-Registers `keydown`/`keyup` on `window`, storing `e.key.toLowerCase()` into a ref map.
-**There is no `blur`/`visibilitychange` reset**, so a key held while the tab loses
-focus stays latched (BUG-110).
-
-### Spawn orientation effect
-
-Projects a reference axis onto the tangent plane at the spawn point so `forward`
-starts tangent to the sphere. Uses `(1,0,0)` when `|up.y| > 0.9`, else `(0,1,0)`.
-
-### Interact-key effect
-
-Registered **once** with `[]` deps. Reads live state through
-`useGameStore.getState()` to avoid a stale closure. Priority order on `E`:
-
-1. `toast` open → `closeToast()` and return.
-2. `dialogue` open → `advanceDialogue()` and return.
-3. `nearbyNpcId` set → `interact(nearbyNpcId)`.
-
-### `useFrame((_, rawDelta))` — the whole simulation
-
-1. `delta = min(rawDelta, 1/30)`; `dt60 = delta * 60` (frame-rate-normalised).
-2. `talking = !!useGameStore.getState().dialogue`.
-3. `up = position.normalize()`; re-orthogonalise `forward` against `up` (keeps it tangent as the player walks over curvature); fall back to `(1,0,0)` if degenerate.
-4. **Turning** (skipped while talking): `A`/`ArrowLeft` = +1, `D`/`ArrowRight` = −1; rotate `forward` about `up` by `turnAmount * TURN_SPEED * delta`.
-5. **Movement:** `W`/`ArrowUp` = +1, `S`/`ArrowDown` = −1; `speed = MOVE_SPEED * (shift ? PHYSICS.sprintSpeed : 1)` = 0.11 or 0.1485.
-6. Split velocity into radial and tangential; `tangent.lerp(forward * moveInput * speed, moveInput !== 0 ? 0.3 : 0.4)` — note the **larger** lerp when idle, so stopping is snappier than starting.
-7. **Gravity/jump:** `newRadial += PHYSICS.gravity * dt60`; if `Space` and `grounded`, `newRadial = PHYSICS.jumpForce` and clear `grounded`.
-8. Recompose velocity, integrate `position += velocity * dt60`.
-9. **Ground collision:** `groundR = terrainRadius(position.normalize())`; if `|position| <= groundR`, snap to `dir * groundR`, set `grounded = true`, and strip the radial velocity component. Else `grounded = false`. There is no step-up, no slope limit, and no horizontal collision of any kind — props and NPCs are pure decoration.
-10. **Orientation:** builds a basis `makeBasis(right, up, fwd)` and `slerp`s the group quaternion toward it at `0.25`.
-11. **Walk bob:** `stepPhase += delta * (sprint ? 16 : 10)` while moving and grounded; drives `bodyRef.position.y = |sin| * 0.06` and `bodyRef.rotation.z = sin * 0.05`.
-12. **Camera:** desired = `position + (-forward * 5) + (up * (1 + 1.4))`, i.e. 5 behind and 2.4 above; `camPos.lerp(desired, talking ? 0.12 : 0.09)`; sets `camera.up = up` and `lookAt(position + up*0.9)`. `relativeCameraPosition[0]` (0) and `relativeCameraOffset` are never applied.
-13. **Proximity:** linear scan over all 20 NPCs measuring `npcVecs[i].distanceTo(position)`, then `setNearbyNpc(nearestDist < TALK_DISTANCE ? nearestId : null)`. `npcVecs` is memoised from the **raw authored `n.position`** — this is BUG-101.
-
-### Mesh
-
-A `<group>` containing: legs (`cylinderGeometry [0.13,0.13,0.7,8]`, `#2b2723`),
-kurta (`capsuleGeometry [0.25,0.55,4,8]`, `#3f7f5c`), head (`sphere 0.22`, `#caa06e`),
-hair (half-sphere 0.23, `#241f19`), satchel (`box [0.28,0.32,0.16]`, `#8a4a2c`), and a
-conditional parcel box (`[0.22,0.2,0.22]`, `#e0a53a`) at `y = 1.95` when `carrying` is truthy.
-
----
-
-## 8. How NPCs are rendered and snapped — `components/game/NpcLayer.tsx`
-
-`NpcLayer` memoises `NPCS` and maps each to `<NpcFigure key={n.id} npc={n}/>`.
-
-### The snap (added by commit `971edae`, "fix(BUG-003)")
-
-```ts
-const pos = new THREE.Vector3(...npc.position)
-const dir = pos.clone().normalize()
-pos.copy(dir.multiplyScalar(terrainRadius(dir)))   // ← discard authored magnitude
-const up   = pos.clone().normalize()
-const quat = surfaceQuaternion(up, 0)
-```
-
-Only the **direction** of `npc.position` survives; the radius is replaced by the
-terrain height. Before this commit NPCs floated above or sank into the ground,
-because the RBF smoothing (σ = 0.4) blends each NPC anchor with its neighbours and
-therefore does **not** reproduce `|npc.position|` exactly.
-
-Measured snap deltas (`terrainRadius(dir) − |npc.position|`), all 20 NPCs:
-
-| NPC | \|pos\| | terrainR | delta |
-|---|---:|---:|---:|
-| raju-clerk | 28.01 | 28.06 | +0.05 |
-| manager-verma | 28.02 | 28.24 | +0.22 |
-| chai-wala | 28.05 | 28.17 | +0.11 |
-| mechanic-gopal | 23.75 | 23.48 | −0.27 |
-| boss-verma-senior | 25.79 | 26.53 | +0.74 |
-| flower-radha | 28.05 | 28.28 | +0.23 |
-| kid-chintu | 22.93 | 22.92 | −0.01 |
-| **coder-priya** | 35.62 | 29.78 | **−5.85** |
-| mill-worker-a | 24.33 | 25.81 | +1.48 |
-| mill-worker-b | 26.02 | 26.52 | +0.50 |
-| engineer-iyer | 22.39 | 23.33 | +0.94 |
-| mill-worker-c | 22.35 | 22.88 | +0.53 |
-| **sadhu-wanderer** | 22.52 | 25.78 | **+3.26** |
-| engineer-rao | 26.87 | 28.41 | +1.54 |
-| boatman-deva | 25.77 | 24.81 | −0.97 |
-| priest-baba | 33.41 | 31.44 | −1.97 |
-| **amma** | 31.21 | 28.08 | **−3.13** |
-| musician-iqbal | 22.25 | 21.48 | −0.77 |
-| street-dog | 24.20 | 22.48 | −1.72 |
-| **peacock** | 26.10 | 23.09 | **−3.01** |
-
-Any `|delta| > TALK_DISTANCE (2.4)` makes that NPC **impossible to interact with**,
-because `Player.tsx` measures distance to the authored point while the player walks
-on the snapped surface. That is 4 NPCs: `coder-priya`, `sadhu-wanderer`, `amma`,
-`peacock`. See BUG-101 — **`amma` breaks an entire quest.**
-
-### Body variants
-
-- **dog** (`street-dog`): capsule `[0.14,0.3,4,8]` in `outfit`, head sphere 0.12 in `hair`.
-- **peacock**: capsule `[0.13,0.35,4,8]` in `outfit`, cone `[0.35,0.6,10]` tail rotated `x: 0.6` in `hair`.
-- **everything else** (all 13 remaining kinds): legs cylinder `[0.13,0.13,0.7,8]` `#3a3630`, body capsule `[0.24,0.5,4,8]` in `outfit`, head sphere 0.22 in `color`, hair half-sphere 0.23 in `hair`.
-
-### Nameplate
-
-A `<Html position={[0, isDog||isPeacock ? 0.6 : 1.95, 0]} center distanceFactor={9} occlude={false}>`
-containing the name chip, the amber `!` badge when `useNpcHasQuest(npc.id)` is true,
-and a "Press E" chip when `nearbyNpcId === npc.id`. Because `occlude={false}`,
-nameplates render **through terrain** — NPCs on the far side of the planet are visible
-as floating labels.
-
-Nothing in `NpcFigure` is memoised: `terrainRadius` (a 39-anchor RBF + several fBm
-evaluations) runs for every NPC on every re-render, and the store subscriptions mean
-a re-render happens on each dialogue/toast/proximity change.
-
----
-
-## 9. The quest system, end to end
-
-### The five quests
-
-| # | `id` | `description` | Step chain (NPC → `receiveModel`) |
-|---|---|---|---|
-| 1 | `quest-invoice` | The Missing Invoice | `raju-clerk` (—) → `boss-verma-senior` (`letter`) → `raju-clerk` (—) |
-| 2 | `quest-spare-parts` | Gopal's Spare Parts | `mechanic-gopal` (`toolkit`) → `flower-radha` (`sweets`) → `mechanic-gopal` (—) |
-| 3 | `quest-pump` | The Water Pump Mix-Up | `mill-worker-a` (—) → `engineer-rao` (`crate`) → `engineer-iyer` (—) |
-| 4 | `quest-offering` | An Offering for the Temple | `amma` (`offering`) → `priest-baba` (—) |
-| 5 | `quest-diary` | The River-Found Diary | `boatman-deva` (`notebook`) → `musician-iqbal` (—) |
-
-13 steps total. Toast colours: `#c25959` (invoice), `#f3c258` (spare-parts),
-`#66bde6` (pump), `#8cc48c` (offering), `#de794e` (diary).
-
-### The full runtime loop
-
-1. **Frame** — `Player.useFrame` scans all NPCs, calls `setNearbyNpc(id | null)` based on `TALK_DISTANCE = 2.4`.
-2. **Indicator** — `NpcFigure` calls `useNpcHasQuest(id)`; if `findStepForNpc` returns non-null the amber `!` appears. `HUD` shows "Press E to talk" when `nearbyNpcId && !dialogue`.
-3. **Press E** — the once-registered handler in `Player.tsx` reads fresh state: toast → dismiss; dialogue → advance; else → `interact(nearbyNpcId)`.
-4. **`interact`** — resolves a quest step via `findStepForNpc` (respecting the carry gate); opens `dialogue` with either `step.texts` or one random `npc.texts` entry.
-5. **Render** — `HUD` shows `dialogue.lines[dialogue.lineIndex]` under `dialogue.npcName`.
-6. **Press E repeatedly** — `advanceDialogue` walks `lineIndex` to the end.
-7. **Resolution** — on the final line, `advanceDialogue` re-resolves the step and commits: advance/complete `npcQuestIndex[quest.id]`, set `carrying` from `receiveModel`, set `activeQuestId`, push to `completedQuests` when last, and raise the toast.
-8. **Toast** — `HUD` renders it with `background: ${color}dd`; auto-dismissed after 3200 ms by a `useEffect` timer, or immediately by pressing `E`.
-9. **Tracker** — `HUD` looks up `QUESTS.find(q => q.id === activeQuestId)` for the "Delivery in progress" card, and shows `completedQuests.length / QUESTS.length`.
-
-### The carry gate — the mechanism that makes deliveries meaningful
-
-A step with `stepIndex > 0` is only offered when `carrying` equals the previous step's
-`receiveModel`. This is what forces the player to physically travel between NPCs.
-Because `carrying` is a **single global slot**, running two quests concurrently
-overwrites it — see BUG-103, which is a permanent soft-lock.
-
----
-
-## 10. Recently fixed, and what is still broken
-
-### Fixed — committed
-
-| Commit | Change |
-|---|---|
-| `14aa79f` | Initial working Indian Messenger Abeto prototype. |
-| `971edae` | **BUG-003** — NPCs floated above / sank into the terrain. `NpcLayer.tsx` now discards the authored radius and re-projects each NPC onto `terrainRadius(dir)`. 3 insertions, 1 deletion. **Note: this fix is incomplete — see BUG-101.** |
-
-### Fixed — uncommitted working-tree changes
-
-| File | Change |
-|---|---|
-| `components/game/Player.tsx` | **Stale-closure fix on the interact key.** The `E` handler used to be re-registered whenever `dialogue`/`toast`/`interact`/`advanceDialogue`/`closeToast` changed, and captured stale values. It is now registered once with `[]` deps and pulls live state from `useGameStore.getState()`. Removed 5 now-unneeded store subscriptions, which also stops `Player` re-rendering on every dialogue change. |
-| `lib/game/props.ts` | **Underwater prop guard.** Added `WATER_LEVEL` to the existing `./data` import and inserted `if (pos.length() < WATER_LEVEL + 0.3) return` immediately before `props.push(...)`, so props whose computed position sits below the waterline are skipped instead of rendering as dark shapes under the ocean shell. |
-
-### Also repaired this session (no diff remains)
-
-`components/game/HUD.tsx` line 1 contained three stray characters — `wdw"use client"` —
-which broke the Turbopack parse with `Expected ';', '}' or <eof>`. Removed; the file
-now matches its committed state exactly.
-
-### Still broken
-
-Summarised in §12. The headline items are **BUG-101** (4 NPCs unreachable, one of
-which kills `quest-offering` outright), **BUG-102** (props scatter tens of degrees
-away from their zone), and **BUG-103** (concurrent quests soft-lock via the single
-`carrying` slot).
-
----
-
-## 11. Imports and dependencies between files
-
-### Internal module graph
-
-```
-lib/game/data.ts            ← imports NOTHING (dependency root)
-      ↑
-      ├── lib/game/terrain.ts    imports three; { NPCS, ZONES, WATER_LEVEL, type Vec3 } from ./data
-      │        ↑
-      │        └── lib/game/props.ts   imports three; { ZONES, WATER_LEVEL } from ./data
-      │                                          ; { surfacePoint, surfaceQuaternion, rng } from ./terrain
-      │
-      └── lib/game/store.ts      imports zustand(create); { NPCS, QUESTS, type Quest, type QuestStep } from ./data
-
-app/layout.tsx      → @vercel/analytics/next, next (Metadata, Viewport types), ./globals.css
-app/page.tsx        → react (Suspense), @react-three/fiber (Canvas),
-                      @/components/game/Scene, @/components/game/HUD
-  └── Scene.tsx     → react (useMemo), three,
-                      @/lib/game/terrain (buildPlanetGeometry), @/lib/game/data (WATER_LEVEL),
-                      ./Player, ./NpcLayer, ./PropsLayer
-        ├── Player.tsx    → react (useRef,useEffect,useMemo), @react-three/fiber (useFrame,useThree), three,
-        │                   @/lib/game/data (NPCS, PHYSICS, INITIAL_CHARACTER),
-        │                   @/lib/game/terrain (terrainRadius), @/lib/game/store (useGameStore)
-        ├── NpcLayer.tsx  → react (useMemo), three, @react-three/drei (Html),
-        │                   @/lib/game/data (NPCS, type Npc),
-        │                   @/lib/game/terrain (surfaceQuaternion, terrainRadius),
-        │                   @/lib/game/store (useGameStore, useNpcHasQuest)
-        └── PropsLayer.tsx→ react (useMemo), three, @/lib/game/props (buildProps, type PlacedProp)
-  └── HUD.tsx       → react (useEffect), @/lib/game/store (useGameStore), @/lib/game/data (QUESTS)
-
-lib/utils.ts        → clsx, tailwind-merge
-components/ui/button.tsx → @base-ui/react/button, class-variance-authority, @/lib/utils
-                           (nothing imports button.tsx — dead branch)
-```
-
-The graph is acyclic and strictly layered: `data → terrain → props → PropsLayer`, and
-`data → store → {HUD, NpcLayer, Player}`. `"use client"` is present on
-`app/page.tsx`, `Scene.tsx`, `Player.tsx`, `NpcLayer.tsx`, `PropsLayer.tsx`, `HUD.tsx`.
-`app/layout.tsx` is the only server component.
-
-### Package dependencies (`package.json`)
-
-**dependencies:** `@base-ui/react ^1.5.0`, `@react-three/drei ^10.7.7`,
-`@react-three/fiber ^9.7.0`, `@vercel/analytics 1.6.1`,
-`class-variance-authority ^0.7.1`, `clsx ^2.1.1`, `lucide-react ^1.16.0`,
-`next 16.3.0`, `react ^19`, `react-dom ^19`, `shadcn ^4.8.0`,
-`tailwind-merge ^3.3.1`, `three ^0.185.1`, `tw-animate-css ^1.4.0`, `zustand ^5.0.14`.
-
-**devDependencies:** `@tailwindcss/postcss ^4.3.3`, `@types/node ^24`,
-`@types/react ^19`, `@types/react-dom ^19`, `@types/three ^0.185.3`,
-`postcss ^8.5`, `tailwindcss ^4.3.3`, `typescript 5.7.3`.
-
-**pnpm.overrides:** `hono 4.12.25`.
-
-`lucide-react` is installed but never imported. Scripts: `dev`, `build`, `start`, `lint`.
-
----
-
-## 12. Current known bugs and their status
-
-Severity: **P0** breaks content · **P1** clearly wrong behaviour · **P2** dead code / polish.
-
-| ID | Sev | Bug | Status |
-|---|---|---|---|
-| **BUG-003** | P1 | NPCs floated above / sank into terrain. | **FIXED** in `971edae` (visual only — see BUG-101). |
-| **BUG-101** | **P0** | `Player.tsx` measures proximity against raw `npc.position` (`npcVecs`) while `NpcLayer.tsx` renders NPCs snapped to `terrainRadius`. Where the snap delta exceeds `TALK_DISTANCE = 2.4`, the NPC can never be talked to: `coder-priya` (5.85), `sadhu-wanderer` (3.26), `amma` (3.13), `peacock` (3.01). **`amma` is step 1 of `quest-offering`, so that quest can never be started.** This is a regression introduced by the BUG-003 fix — before it, render and hit-test used the same point. | **OPEN.** Fix: snap `npcVecs` the same way, or export one shared `npcSurfacePosition(npc)` helper used by both files. |
-| **BUG-102** | **P0** | In `props.ts`, `dist = distFrac * zone.radius * 0.045` multiplies an angular offset by `zone.radius`, which is in world units (5.5–18). Large zones fling their props across the planet: a `mill-block` at `distFrac 1.3` lands **46.5° / ~16 world units** from the mill centre; `distFrac 1.6` lands **52.3°**; `grove` reaches **48°**. Props do not appear in the zone they belong to. Offsets are also applied linearly rather than via `tan()`, unlike the correct `randomDirInCap` helper. | **OPEN.** Root cause of most of BUG-104. |
-| **BUG-103** | **P0** | `carrying` is a single global slot. Accepting a parcel from quest B while carrying quest A's parcel overwrites it, and A's `stepIndex` has already advanced past the giver — so A's carry gate can never be satisfied again. Example: take the `letter` from `boss-verma-senior`, then talk to `mechanic-gopal` (`carrying = "toolkit"`) — `quest-invoice` is permanently unfinishable. | **OPEN.** Fix: make `carrying` a set/array, or refuse a new parcel while one is held. |
-| **BUG-104** | P1 | 14 of 71 props are silently discarded by the new water guard (`ghat` 4/6, `grove` 7/16, `mill` 2/6, `beach` 1/6). The guard skips rather than relocating, so the ghat renders only 2 of its 6 stepped terraces. | **OPEN by design** — the guard is the intended Day-1 fix; the real defect is BUG-102 + BUG-106 putting props underwater in the first place. |
-| **BUG-105** | P1 | `Npc.talkDistance` is never read. Defined as `2.2` on `boss-verma-senior` and `boatman-deva`; `Player.tsx` uses the hardcoded `TALK_DISTANCE = 2.4` for everyone. | **OPEN.** |
-| **BUG-106** | P1 | The `ghat` zone ("Ganga Ghat") is **entirely submerged**: `terrainRadius` at its centre is **20.00**, below `WATER_LEVEL = 21.2`. A whole named location is underwater, and 4 of its 6 props are culled. | **OPEN.** Needs the zone centre lifted or the anchor radius raised. |
-| **BUG-107** | P2 | `QuestStep.extraData.uiIcon` (values `house`, `clerk`, `flowerseller`, `workshop`, `rao`, `iyer`, `temple`, `musician`, `complete`) is stored in the toast state but never rendered by `HUD.tsx`. | **OPEN.** |
-| **BUG-108** | P1 | 25.7 % of the planet surface lies below `WATER_LEVEL`, and the player walks on it normally — there is no swim, drown, or slow-down handling, and the camera passes through the translucent water shell. Max ocean depth is only 1.6 units (terrain min radius 19.60 vs water 21.2). | **OPEN.** |
-| **BUG-109** | P2 | `PHYSICS.positionForce`, `.damp`, `.dampIdle`, `.capsuleRadius`, `.floorDetectInclination` are never referenced. `Player.tsx` uses only `jumpForce`, `gravity`, `sprintSpeed` and hardcodes its own `MOVE_SPEED`/`TURN_SPEED`. | **OPEN.** |
-| **BUG-110** | P1 | `useKeys()` never clears on `blur`/`visibilitychange`, so a key held while the tab loses focus stays latched and the player keeps walking. | **OPEN.** |
-| **BUG-111** | P2 | `findStepForNpc` returns the **first** matching quest in `QUESTS` order. If two quests ever need the same NPC at their current step, the later one is unreachable until the earlier advances. No collision exists today — latent. | **OPEN (latent).** |
-| **BUG-112** | P2 | `mill-worker-c` (Ganesh), `street-dog` (Sheru), and `peacock` all have `texts: []` and no quest role, so pressing `E` on them does nothing at all — no dialogue, no feedback. | **OPEN.** |
-| **BUG-113** | P2 | `<Html occlude={false}>` in `NpcLayer` means nameplates render through the planet; NPCs on the far side appear as floating labels in the sky. | **OPEN.** |
-| **BUG-114** | P2 | Pressing `E` while a toast is visible dismisses the toast instead of advancing dialogue, so a fast player loses one keypress after every step resolution. | **OPEN.** |
-| **BUG-115** | P2 | `next.config.mjs` sets `typescript.ignoreBuildErrors: true` — type errors never fail `next build`. (`npx tsc --noEmit` currently passes clean.) | **OPEN.** |
-| **BUG-116** | P2 | Per-frame allocation churn in `Player.useFrame`: multiple `.clone()`, `new THREE.Quaternion`, `new THREE.Matrix4`, `new THREE.Vector3` every frame. Same for `NpcFigure`, which re-runs `terrainRadius` (39-anchor RBF) per NPC per render with no memoisation. | **OPEN.** |
-| **BUG-117** | P2 | Dead exports and files: `EMOJIS` (data.ts), `randomDirInCap` and the `slopeAt` re-export (terrain.ts), `INITIAL_CHARACTER.relativeCameraOffset`, `components/ui/button.tsx`, and the `lucide-react` dependency. | **OPEN.** |
-| **BUG-118** | P2 | `tsconfig.tsbuildinfo` is untracked and not in `.gitignore`, so it shows up in every `git status`. | **OPEN.** |
-| **BUG-119** | P2 | Store state is in-memory only — a page refresh wipes all quest progress. No persistence middleware. | **OPEN (by design?).** |
-
----
-
-## 13. `WATER_LEVEL`, `ZONES`, `NPCS`, `QUESTS`, `PHYSICS` — contents and usage
-
-### `WATER_LEVEL = 21.2`
-
-A single number: the radius of the ocean sphere.
-
-- `Scene.tsx` — `new THREE.IcosahedronGeometry(WATER_LEVEL, 5)` renders the sea as a translucent sphere (`#3f7fa8`, `opacity 0.82`, `roughness 0.2`, `metalness 0.1`).
-- `terrain.ts` — shoreline flattening (`r < WATER_LEVEL + 1.1`, floor at `WATER_LEVEL − 1.6 = 19.60`); sand/deep-sand colouring (`+0.55`); beach fringe lerp (`+1.5`); road suppression below `+0.3`.
-- `props.ts` — the cull guard `pos.length() < WATER_LEVEL + 0.3`.
-
-The `+0.3` threshold is duplicated as a literal in both `terrain.ts:256` and
-`props.ts:79`; there is no shared constant.
-
-### `ZONES` — 9 entries
+### `ZONES` — 9 entries (display names renamed to Bengaluru landmarks in P9.1)
 
 | `id` | `text` | `center` | `radius` | terrainR at centre |
 |---|---|---|---:|---:|
-| `bazaar` | Sarafa Bazaar | `[25.2, 11.0, 2.3]` | 9 | 28.17 |
-| `mill` | Ashoka Textile Mill | `[-7.8, 4.2, -29.3]` | 18 | 27.08 |
-| `ghat` | Ganga Ghat | `[8.1, -13.8, -12.4]` | 10 | **20.00 (underwater)** |
-| `haveli` | Rajwada Haveli | `[-14.4, -6.1, 27.0]` | 9 | 27.97 |
-| `grove` | Amba Mango Grove | `[-8.8, -19.2, 2.5]` | 13 | 22.95 |
-| `samadhi` | Peepal Tree Ground | `[27.7, -14.2, 13.4]` | 8 | 27.89 |
-| `workshop` | Gopal's Workshop | `[-21.7, -6.8, 6.3]` | 5.5 | 23.33 |
-| `temple` | Hilltop Shiva Temple | `[-10.2, 34.8, -3.8]` | 8 | 31.01 |
-| `beach` | Nadi Kinara | `[-13.1, 15.6, -1.8]` | 8 | 24.41 |
+| `bazaar` | KR Market | `[40.32, 17.6, 3.68]` | 9 | 45.17 |
+| `mill` | Binny Mills | `[-12.48, 6.72, -46.88]` | 18 | 43.53 |
+| `ghat` | Cauvery Riverside | `[14.98, -25.52, -22.93]` | 10 | 36.84 |
+| `haveli` | Bengaluru Palace | `[-23.04, -9.76, 43.2]` | 9 | 44.86 |
+| `grove` | Dodda Alada Mara | `[-14.08, -30.72, 4]` | 13 | 36.88 |
+| `samadhi` | SP Road | `[44.32, -22.72, 21.44]` | 8 | 44.84 |
+| `workshop` | Gopal's Garage | `[-34.72, -10.88, 10.08]` | 5.5 | 37.35 |
+| `temple` | Nandi Betta Temple | `[-16.32, 55.68, -6.08]` | 8 | 49.72 |
+| `beach` | Sampangi Kere | `[-20.96, 24.96, -2.88]` | 8 | 39.16 |
 
-Used by: `terrain.ts` (`makeAnchors` at weight 1.35, and `buildRoads` for the 11 road
-arcs) and `props.ts` (`byId` lookup — direction, `radius`, and `PALETTE` key).
-`Zone.text` is **never rendered anywhere** — there is no location banner in the HUD.
+Ids are permanent keys (palette, roads, prop placement) — **never rename them**
+and **never move a `center`**: both are load-bearing (WORLD_DESIGN Rules 1–3).
 
 ### `NPCS` — 20 entries
 
-Quest-critical (8): `raju-clerk` (Raju), `boss-verma-senior` (Seth Rajwada),
-`mechanic-gopal` (Gopal the Mechanic), `flower-radha` (Radha the Flower Seller),
-`mill-worker-a` (Mill Worker), `engineer-rao` (Dr. Rao), `engineer-iyer` (Dr. Iyer),
-`amma` (Amma), `priest-baba` (Baba Someshwar), `boatman-deva` (Deva the Boatman),
-`musician-iqbal` (Ustad Iqbal). *(11 NPC slots across 13 steps — `raju-clerk` and
-`mechanic-gopal` each appear twice.)*
-
-Flavour-only (9): `manager-verma`, `chai-wala` (Bansi), `kid-chintu` (Chintu),
-`coder-priya` (Priya — the four-line three.js aside), `mill-worker-b` (Suresh),
-`mill-worker-c` (Ganesh, silent), `sadhu-wanderer` (The Wanderer),
-`street-dog` (Sheru, silent), `peacock` (silent).
-
-Used by: `terrain.ts` (`makeAnchors` — every NPC position is a weight-1 terrain
-anchor, so **moving an NPC deforms the ground**), `NpcLayer.tsx` (rendering),
-`Player.tsx` (`npcVecs` proximity scan), `store.ts` (name lookup and idle barks).
+Same cast as Day 1 (positions ×1.6). Every NPC position is a weight-1 terrain
+anchor — **moving a villager deforms the ground** (Rule 4). NPCs stand on
+`groundOrDeck`, so villagers near roads ride the asphalt.
 
 ### `QUESTS` — 5 quests, 13 steps
 
-Full chains listed in §9. Used by `store.ts` (`findStepForNpc` iterates it) and
-`HUD.tsx` (active-quest lookup and the `/ QUESTS.length` completion counter).
+Unchanged: quest-invoice, quest-spare-parts, quest-pump, quest-offering,
+quest-diary. Carry-gate mechanics as originally documented. Dialogue still
+references the pre-Bengaluru world in places (see backlog DESIGN row).
 
 ### `PHYSICS`
 
 ```ts
-export const PHYSICS = {
-  jumpForce: 0.145,              // USED — radial velocity on Space
-  positionForce: 0.0055,         // UNUSED
-  gravity: -0.0102,              // USED — added to radial velocity per dt60
-  damp: 0.91,                    // UNUSED
-  dampIdle: 0.62,                // UNUSED
-  sprintSpeed: 1.35,             // USED — multiplies MOVE_SPEED under Shift
-  capsuleRadius: 0.2,            // UNUSED (no capsule collision exists)
-  floorDetectInclination: 0.7,   // UNUSED (no slope limit exists)
-}
+{ jumpForce: 0.16675, gravity: -0.01173, sprintSpeed: 1.4946 }   // live
+// positionForce, damp, dampIdle, capsuleRadius, floorDetectInclination — still unused
 ```
-
-Only 3 of 8 fields are live; `Player.tsx` supplies its own `MOVE_SPEED = 0.11`,
-`TURN_SPEED = 2.6`, and `TALK_DISTANCE = 2.4` as module constants instead.
-
-### `INITIAL_CHARACTER`
-
-```ts
-{
-  position: [-10, 36, 14],              // |p| = 39.90; terrain there = 30.93,
-                                        // so the player falls 8.97 units at spawn
-  relativeCameraPosition: [0, 1, 5],    // only [1] and [2] are read
-  relativeCameraOffset: [-0.65, 0, 1],  // UNUSED
-}
-```
-
-Spawn is directly above the temple mountain, north-west face.
 
 ---
 
 ## Quick orientation for a new assistant
 
-- **Change content?** → `lib/game/data.ts`. Be aware that editing any `NPCS[i].position` or `ZONES[i].center` **reshapes the terrain**, because both feed `makeAnchors()`.
-- **Change the world shape?** → `terrainRadius()` in `lib/game/terrain.ts`. It is the single source of truth for both the mesh and player collision.
-- **Change decoration?** → `buildProps()` in `lib/game/props.ts` for placement, `PropInstance` in `PropsLayer.tsx` for geometry.
-- **Change game rules?** → `findStepForNpc` / `advanceDialogue` in `lib/game/store.ts`.
-- **Change feel?** → the module constants at the top of `Player.tsx` (not `PHYSICS`, which is mostly inert).
-- **Verify a terrain claim numerically** — compile `lib/game/{data,terrain,props}.ts` plus a driver with `npx tsc --module esnext --target es2020 --moduleResolution bundler`, add `{"type":"module"}` beside the output, append `.js` to the emitted relative import specifiers, and run it with `node`. That is how every measured figure in this document was produced.
+- **Change content?** → `lib/game/data.ts`. Editing any `NPCS[i].position` or
+  `ZONES[i].center` **reshapes the terrain** (both feed `makeAnchors()`).
+- **Change the world shape?** → `terrainRadius()` in terrain.ts — single source
+  of truth for mesh, placement, and collision.
+- **Change roads/metro/bridges/collision/civic?** → `lib/game/props.ts`; keep
+  its `ROAD_PAIRS` in sync with terrain's `buildRoads()` by hand. The metro
+  loop geometry itself lives in terrain.ts (`METRO_LOOP`) — change it there
+  and both the grading and the corridor follow.
+- **Change decoration?** → `buildProps()` for placement, `PropInstance` /
+  fleet components in PropsLayer.tsx for geometry (instanced kinds need their
+  matrices updated in the fleet builders, not the switch).
+- **Change ride/feel?** → constants at the top of `Player.tsx`, plus
+  `corridorProfile` / `corridorSurface` in props.ts for the road itself.
+- **Verify numerically before claiming** — the tsc+node harness recipe in §11
+  is how every figure here was produced; prefer extending it over estimating.

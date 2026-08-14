@@ -171,6 +171,185 @@ export function roadDistance(dir: THREE.Vector3) {
   return best
 }
 
+/* ---------------------------------------------------------- metro loop */
+
+/**
+ * The metro/arterial loop lives HERE, not in props.ts, because the terrain
+ * grading must follow the same geometry the corridor is drawn from. It used
+ * to be built inside buildNetwork() while the flattening followed the
+ * hand-duplicated ROADS arc list above — the two disagree by up to ~0.5u
+ * laterally and the arcs' flat core (~±2u) never covered the corridor's
+ * surfaced width (±3.95u), which stood shoulder cliffs and rock stripes
+ * along every leg. The loop needs only ZONES, so it moves below props in
+ * the dependency graph and props.ts imports it.
+ */
+
+const ZONE_DIRS_T = ZONES.map((z) => new THREE.Vector3(...z.center).normalize())
+
+/** closed tour of all nine zones: nearest neighbour from KR Market, then 2-opt */
+function planLoop(): number[] {
+  const n = ZONE_DIRS_T.length
+  const dist = (a: number, b: number) => ZONE_DIRS_T[a].angleTo(ZONE_DIRS_T[b])
+  const start = Math.max(0, ZONES.findIndex((z) => z.id === "bazaar"))
+
+  const tour = [start]
+  const left = new Set<number>()
+  for (let i = 0; i < n; i++) if (i !== start) left.add(i)
+  while (left.size) {
+    const last = tour[tour.length - 1]
+    let best = -1
+    let bestD = Infinity
+    for (const c of left) {
+      const d = dist(last, c)
+      if (d < bestD) {
+        bestD = d
+        best = c
+      }
+    }
+    tour.push(best)
+    left.delete(best)
+  }
+
+  const length = (t: number[]) => {
+    let s = 0
+    for (let i = 0; i < n; i++) s += dist(t[i], t[(i + 1) % n])
+    return s
+  }
+  for (let pass = 0; pass < 40; pass++) {
+    let improved = false
+    for (let i = 1; i < n - 1 && !improved; i++) {
+      for (let k = i + 1; k < n && !improved; k++) {
+        const cand = tour
+          .slice(0, i)
+          .concat(tour.slice(i, k + 1).reverse(), tour.slice(k + 1))
+        if (length(cand) < length(tour) - 1e-9) {
+          tour.splice(0, n, ...cand)
+          improved = true
+        }
+      }
+    }
+    if (!improved) break
+  }
+  return tour
+}
+
+/** even arc-length resample spacing (radians) — one sample ≈ 0.8 world units */
+const LOOP_SAMPLE = 0.02
+/**
+ * Spacing of the extra spline controls seeded along each leg's great circle.
+ * Smaller hugs the arc more tightly, larger rounds each hub more generously.
+ */
+const LOOP_CONTROL_STEP = 0.12
+
+export type MetroLoop = {
+  /** zone indices (into ZONES) in tour order */
+  order: number[]
+  /** unit directions of the resampled closed loop, xyz-packed */
+  dirs: Float64Array
+  n: number
+  /** arc length between consecutive samples (radians) */
+  step: number
+  /** total loop arc length (radians) */
+  total: number
+  /** arc position of each zone centre along the loop, in `order` order */
+  zoneT: number[]
+}
+
+export const METRO_LOOP: MetroLoop = (() => {
+  const order = planLoop()
+  // Catmull-Rom through the zone centres alone bows off the geodesics, so each
+  // leg is also seeded with controls along its own great circle: the curve hugs
+  // the arc between hubs and only rounds the corner at each one.
+  const controls: THREE.Vector3[] = []
+  const zoneControl: number[] = []
+  for (let i = 0; i < order.length; i++) {
+    const a = ZONE_DIRS_T[order[i]]
+    const b = ZONE_DIRS_T[order[(i + 1) % order.length]]
+    const om = a.angleTo(b)
+    const sin = Math.sin(om)
+    zoneControl.push(controls.length)
+    const k = Math.max(1, Math.round(om / LOOP_CONTROL_STEP))
+    for (let j = 0; j < k; j++) {
+      const t = (j / k) * om
+      controls.push(
+        sin < 1e-9
+          ? a.clone()
+          : a
+              .clone()
+              .multiplyScalar(Math.sin(om - t) / sin)
+              .addScaledVector(b, Math.sin(t) / sin)
+              .normalize(),
+      )
+    }
+  }
+
+  const curve = new THREE.CatmullRomCurve3(
+    controls.map((d) => d.clone()),
+    true,
+    "centripetal",
+  )
+  const M = 4000
+  const pts: THREE.Vector3[] = []
+  for (let i = 0; i < M; i++) pts.push(curve.getPoint(i / M).normalize())
+  const cum = new Float64Array(M + 1)
+  for (let i = 0; i < M; i++) cum[i + 1] = cum[i] + pts[i].angleTo(pts[(i + 1) % M])
+  const total = cum[M]
+
+  const n = Math.max(16, Math.round(total / LOOP_SAMPLE))
+  const step = total / n
+  const dirs = new Float64Array(n * 3)
+  {
+    let seg = 0
+    const v = new THREE.Vector3()
+    for (let i = 0; i < n; i++) {
+      const target = i * step
+      while (seg < M - 1 && cum[seg + 1] < target) seg++
+      const span = cum[seg + 1] - cum[seg]
+      const f = span > 1e-12 ? (target - cum[seg]) / span : 0
+      v.copy(pts[seg]).lerp(pts[(seg + 1) % M], f).normalize()
+      dirs[i * 3] = v.x
+      dirs[i * 3 + 1] = v.y
+      dirs[i * 3 + 2] = v.z
+    }
+  }
+
+  // the closed spline passes through control k at u = k/K, so sample
+  // j = k/K * M is that control and cum[j] its arc position
+  const K = controls.length
+  const zoneT = zoneControl.map((k) => cum[Math.min(M, Math.round((k / K) * M))])
+
+  return { order, dirs, n, step, total, zoneT }
+})()
+
+/** angular distance (radians) from a unit direction to the nearest loop sample */
+export function loopAngle(dir: THREE.Vector3) {
+  const { dirs, n } = METRO_LOOP
+  let bd = -2
+  let bi = 0
+  for (let i = 0; i < n; i += 4) {
+    const d = dir.x * dirs[i * 3] + dir.y * dirs[i * 3 + 1] + dir.z * dirs[i * 3 + 2]
+    if (d > bd) {
+      bd = d
+      bi = i
+    }
+  }
+  for (let k = bi - 3; k <= bi + 3; k++) {
+    const i = ((k % n) + n) % n
+    const d = dir.x * dirs[i * 3] + dir.y * dirs[i * 3 + 1] + dir.z * dirs[i * 3 + 2]
+    if (d > bd) bd = d
+  }
+  return Math.acos(Math.max(-1, Math.min(1, bd)))
+}
+
+/**
+ * Noise suppression band around the loop, in world units. The corridor's
+ * surfaced width ends at 3.95u and its shoulder at 5.55u (props.ts), so the
+ * fully-flat core covers the whole surfaced width with margin and the ramp
+ * releases well outside the shoulder.
+ */
+const LOOP_FLAT_CORE = 4.4
+const LOOP_FLAT_RAMP = 9
+
 /* -------------------------------------------------------------- height */
 
 const _d = new THREE.Vector3()
@@ -191,8 +370,12 @@ function baseRadius(dir: THREE.Vector3) {
   return num / den
 }
 
-/** surface radius at a (normalised) direction */
-export function terrainRadius(dir: THREE.Vector3) {
+/**
+ * The landform WITHOUT the corridor grading — noise, anchors, shoreline. The
+ * road profile is built from THIS, and the public terrainRadius() then grades
+ * the ground toward that profile, so the two never chase each other.
+ */
+function naturalRadius(dir: THREE.Vector3) {
   const base = baseRadius(dir)
   const x = dir.x
   const y = dir.y
@@ -204,7 +387,19 @@ export function terrainRadius(dir: THREE.Vector3) {
   // brown rock stripes flanking the roads. Widened to 1..2.6 with a higher floor,
   // which is the same suppression spread thin enough to read as a graded shoulder.
   const road = roadDistance(dir)
-  const flat = road < 1 ? 0.28 : road < 2.6 ? 0.28 + 0.72 * ((road - 1) / 1.6) : 1
+  let flat = road < 1 ? 0.28 : road < 2.6 ? 0.28 + 0.72 * ((road - 1) / 1.6) : 1
+  // the drawn corridor follows the metro loop, not the painted arcs — grade
+  // along the geometry that is actually surfaced (skip when already at floor)
+  if (flat > 0.28) {
+    const lat = loopAngle(dir) * base
+    if (lat < LOOP_FLAT_RAMP) {
+      const loopFlat =
+        lat < LOOP_FLAT_CORE
+          ? 0.28
+          : 0.28 + 0.72 * ((lat - LOOP_FLAT_CORE) / (LOOP_FLAT_RAMP - LOOP_FLAT_CORE))
+      if (loopFlat < flat) flat = loopFlat
+    }
+  }
   const lumps = fbm(x * 5.1, y * 5.1, z * 5.1, 3) * 2.16
   const detail = fbm(x * 15.3, y * 15.3, z * 15.3, 3) * 0.672
   const ridges =
@@ -214,6 +409,212 @@ export function terrainRadius(dir: THREE.Vector3) {
   if (r < WATER_LEVEL + 1.76) {
     const t = Math.max(0, (r - (WATER_LEVEL - 2.56)) / 4.32)
     r = WATER_LEVEL - 2.56 + t * t * 4.32
+  }
+  return r
+}
+
+/* -------------------------------------------- corridor grading (P47) */
+
+/**
+ * The road's height profile, owned by the terrain so the GROUND can be graded
+ * to it. It used to live only in props.ts: the road deck rode a smoothed fill
+ * envelope up to 1.2u above ground that never moved, and the whole network
+ * read as a causeway on a permanent embankment — every zone showed a road
+ * hovering over its own land. Here the ground itself is pulled up to the
+ * profile across the corridor band, so road and land meet.
+ */
+export const ROAD_MAX_FILL = 1.2
+/** smoothing windows in loop samples (0.02 rad ≈ 0.8u each) */
+const PROFILE_SMOOTH = 9
+const PROFILE_ITERATIONS = 10
+const PROFILE_ITER_SMOOTH = 2
+/** ground equals the road bed out to here (world units from the centreline) */
+const GRADE_FULL = 4.4
+/** grading feathers back to the natural landform by here — wide, or the
+ * feather itself is steep enough to trip the rock colouring into stripes */
+const GRADE_OUT = 11
+
+let _profileH: Float64Array | null = null
+let _profileCumS: Float64Array | null = null
+
+function profileGrid(): Float64Array {
+  if (_profileH) return _profileH
+  const { dirs, n, step } = METRO_LOOP
+  const probe = new THREE.Vector3()
+  const raw = new Float64Array(n)
+  for (let i = 0; i < n; i++) {
+    probe.set(dirs[i * 3], dirs[i * 3 + 1], dirs[i * 3 + 2])
+    raw[i] = naturalRadius(probe)
+  }
+  const wrap = (i: number) => ((i % n) + n) % n
+  const mean = (src: Float64Array, w: number) => {
+    const out = new Float64Array(n)
+    for (let i = 0; i < n; i++) {
+      let s = 0
+      for (let k = -w; k <= w; k++) s += src[wrap(i + k)]
+      out[i] = s / (2 * w + 1)
+    }
+    return out
+  }
+  // crest-clearing envelope start, then constrained smoothing: smooth, clamp
+  // into [ground, ground + fill cap], repeat — ends on the clamp so the fill
+  // bound is exact (P45 pipeline, moved here at the loop's own resolution)
+  const roll = new Float64Array(n)
+  for (let i = 0; i < n; i++) {
+    let m = -Infinity
+    for (let k = -PROFILE_SMOOTH; k <= PROFILE_SMOOTH; k++) {
+      const v = raw[wrap(i + k)]
+      if (v > m) m = v
+    }
+    roll[i] = m
+  }
+  let h = mean(roll, PROFILE_SMOOTH)
+  for (let it = 0; it < PROFILE_ITERATIONS; it++) {
+    h = mean(h, PROFILE_ITER_SMOOTH)
+    for (let i = 0; i < n; i++) {
+      if (h[i] < raw[i]) h[i] = raw[i]
+      else if (h[i] > raw[i] + ROAD_MAX_FILL) h[i] = raw[i] + ROAD_MAX_FILL
+    }
+  }
+  _profileH = h
+  // cumulative WORLD arc length along the profile surface (radial term
+  // included) — dash phase and any along-road measure key off this
+  const cum = new Float64Array(n + 1)
+  for (let i = 0; i < n; i++) {
+    const along = step * 0.5 * (h[i] + h[(i + 1) % n])
+    cum[i + 1] = cum[i] + Math.hypot(along, h[(i + 1) % n] - h[i])
+  }
+  _profileCumS = cum
+  return h
+}
+
+const _lpProbe = new THREE.Vector3()
+
+/** rideable corridor height at loop arc position t — seam-free, cap exact */
+export function loopProfileAt(t: number) {
+  const h = profileGrid()
+  const { dirs, n, step } = METRO_LOOP
+  let x = t / step
+  x = ((x % n) + n) % n
+  const i = Math.floor(x)
+  const f = x - i
+  const j = (i + 1) % n
+  let v = h[i] + (h[j] - h[i]) * f
+  // re-clamp at the query point so the fill cap holds exactly everywhere
+  _lpProbe
+    .set(
+      dirs[i * 3] + (dirs[j * 3] - dirs[i * 3]) * f,
+      dirs[i * 3 + 1] + (dirs[j * 3 + 1] - dirs[i * 3 + 1]) * f,
+      dirs[i * 3 + 2] + (dirs[j * 3 + 2] - dirs[i * 3 + 2]) * f,
+    )
+    .normalize()
+  const raw = naturalRadius(_lpProbe)
+  if (v < raw) v = raw
+  else if (v > raw + ROAD_MAX_FILL) v = raw + ROAD_MAX_FILL
+  return v
+}
+
+/**
+ * World distance ridden along the corridor from t=0 to t. GLOBAL and
+ * unwrapped (the final leg's t runs past the closed loop's seam), so dash
+ * phase never resets at a leg seam.
+ */
+export function loopWorldS(t: number) {
+  profileGrid()
+  const cum = _profileCumS!
+  const n = cum.length - 1
+  const totalAngular = n * METRO_LOOP.step
+  const wraps = Math.floor(t / totalAngular)
+  const x = (t - wraps * totalAngular) / METRO_LOOP.step
+  const i = Math.min(n - 1, Math.floor(x))
+  const f = x - i
+  return wraps * cum[n] + cum[i] + (cum[i + 1] - cum[i]) * f
+}
+
+/**
+ * Surface radius at a (normalised) direction: the natural landform, graded
+ * toward the road profile inside the corridor band. The road-height term is a
+ * kernel-weighted average over nearby loop samples, so where two legs meet at
+ * a hub the ground blends BOTH smoothly instead of jumping allegiance at the
+ * bisector.
+ */
+export function terrainRadius(dir: THREE.Vector3) {
+  const nat = naturalRadius(dir)
+  // Water is never graded. Blending near the crossings either cut dry banks
+  // under the waterline or raised an earthen land bridge across the gorge
+  // floor (both measured) — the embankment simply stops at the water's edge,
+  // and the wet topology stays exactly the natural one the bridge spans were
+  // scanned from. Also skips the scan for most of the planet (ocean).
+  if (nat < WATER_LEVEL + 0.48) return nat
+  const h = profileGrid()
+  const { dirs, n, step } = METRO_LOOP
+  // conservative angular window: GRADE_OUT at the lowest ground the loop sees
+  const cosMax = 0.9285 // cos(GRADE_OUT / 29)
+  let bd = -2
+  let bi = 0
+  let wsum = 0
+  let psum = 0
+  for (let i = 0; i < n; i++) {
+    const d = dir.x * dirs[i * 3] + dir.y * dirs[i * 3 + 1] + dir.z * dirs[i * 3 + 2]
+    if (d > bd) {
+      bd = d
+      bi = i
+    }
+    if (d > cosMax) {
+      // wet-crossing samples are excluded: the profile dives under the
+      // bridges there, and letting it feed the average CUT the dry banks
+      // below the waterline — a new wet pocket opened right where the deck
+      // ends (measured, workshop-beach)
+      if (h[i] < WATER_LEVEL + 0.3) continue
+      const lat = Math.acos(Math.min(1, d)) * nat
+      if (lat < GRADE_OUT) {
+        const w = 1 - lat / GRADE_OUT
+        wsum += w
+        psum += w * h[i]
+      }
+    }
+  }
+  if (wsum <= 1e-6) return nat
+  const latMin = Math.acos(Math.max(-1, Math.min(1, bd))) * nat
+  if (latMin >= GRADE_OUT) return nat
+  const road = psum / wsum
+  const x = (latMin - GRADE_FULL) / (GRADE_OUT - GRADE_FULL)
+  let f = x <= 0 ? 1 : x >= 1 ? 0 : 1 - x * x * (3 - 2 * x)
+  // fade the grading out where few dry samples remain (mid-crossing), so the
+  // ill-conditioned average never steers the ground
+  if (wsum < 2) f *= wsum / 2
+  let r = nat + (road - nat) * f
+  // The averaged road height overshoots the actual deck in profile sags and
+  // where a second, higher leg feeds the kernel at a hub — measured 0.67u of
+  // grass through the asphalt. Under the surfaced corridor the ground may
+  // never rise above the profile itself (continuous nearest-t sample). Wet
+  // crossings are exempt: there the profile dives under the bridge and the
+  // gorge must keep its walls.
+  if (latMin < 5.5 && r > nat) {
+    // continuous t: project onto the two adjacent loop segments in unit space
+    let bestT = bi * step
+    let bestD2 = Infinity
+    const sx = (i: number) => dirs[(((i % n) + n) % n) * 3]
+    const sy = (i: number) => dirs[(((i % n) + n) % n) * 3 + 1]
+    const sz = (i: number) => dirs[(((i % n) + n) % n) * 3 + 2]
+    for (const j of [bi - 1, bi + 1]) {
+      const ax = sx(bi), ay = sy(bi), az = sz(bi)
+      const bx = sx(j) - ax, by = sy(j) - ay, bz = sz(j) - az
+      const len2 = bx * bx + by * by + bz * bz
+      if (len2 < 1e-12) continue
+      let ft = ((dir.x - ax) * bx + (dir.y - ay) * by + (dir.z - az) * bz) / len2
+      ft = Math.max(0, Math.min(1, ft))
+      const px = ax + bx * ft - dir.x
+      const py = ay + by * ft - dir.y
+      const pz = az + bz * ft - dir.z
+      const d2 = px * px + py * py + pz * pz
+      if (d2 < bestD2) {
+        bestD2 = d2
+        bestT = (bi + (j < bi ? -ft : ft)) * step
+      }
+    }
+    const prof = loopProfileAt(bestT)
+    if (prof >= WATER_LEVEL + 0.3 && r > prof) r = prof
   }
   return r
 }
