@@ -48,6 +48,8 @@ export type PropKind =
   | "temple-steps"
   | "civic-pad"
   | "glb-building"
+  | "cow"
+  | "cat"
 
 export type PlacedProp = {
   kind: PropKind
@@ -120,6 +122,8 @@ const KIND_COLORS: Partial<Record<PropKind, [string, string]>> = {
   // paver tone with a slightly darker rim, so a reserved plot reads as ground
   // that has been claimed rather than as a building
   "civic-pad": ["#cfc4ae", "#a4998a"],
+  cow: ["#e6e0d3", "#4a443c"],
+  cat: ["#7a6f62", "#2f2a25"],
 }
 
 /* ------------------------------------------------------------- namma metro */
@@ -1793,8 +1797,67 @@ export function buildProps(): PlacedProp[] {
   placeCivicPads(props)
   // after the pads: buildings stand on the SITED pad centres
   placeGlbBuildings(props)
+  placeStreetAnimals(props)
 
   return props
+}
+
+/**
+ * Cows and cats. They are PROPS, not NPCS: every entry in NPCS is a weight-1
+ * anchor in the terrain's radial-basis field (WORLD_DESIGN rule 4), so adding
+ * a cow to that list would dent the landscape under it. As props they cost the
+ * terrain nothing. The cow keeps its collider — it is meant to be an obstacle
+ * you walk around, the way a real Bengaluru street cow is.
+ */
+function placeStreetAnimals(props: PlacedProp[]) {
+  const net = NET
+  if (!net) return
+  const [cowA, cowB] = KIND_COLORS.cow ?? ["#e6e0d3", "#4a443c"]
+  const [catA, catB] = KIND_COLORS.cat ?? ["#7a6f62", "#2f2a25"]
+  const dir = new THREE.Vector3()
+  const ahead = new THREE.Vector3()
+  let seed = 9300
+
+  // beside the arterial, just outside the graded shoulder
+  const spots: [number, number][] = [
+    [0.14, 1],
+    [0.38, -1],
+    [0.62, 1],
+    [0.86, -1],
+  ]
+  spots.forEach(([f, side], k) => {
+    const t = f * net.total
+    loopDir(t, dir)
+    loopDir(t + 0.01, ahead)
+    const fwd = ahead.clone().sub(dir)
+    fwd.addScaledVector(dir, -fwd.dot(dir))
+    if (fwd.lengthSq() < 1e-12) return
+    fwd.normalize()
+    const right = new THREE.Vector3().crossVectors(fwd, dir).normalize()
+    const g = terrainRadius(dir)
+    // walk out until clear of the drawn corridor, then one step more
+    for (let lat = 6.4; lat <= 9.5; lat += 0.4) {
+      const d = dir.clone().addScaledVector(right, (side * lat) / g).normalize()
+      const r = terrainRadius(d)
+      if (r < WATER_LEVEL + 0.6) continue
+      if (corridorSurface(d) !== null) continue
+      const at = d.clone().multiplyScalar(r)
+      if (propClearance(at, props).nearest < 1.2) continue
+      if (!npcClearance(at).ok) continue
+      const kind: PropKind = k === 3 ? "cat" : "cow"
+      props.push({
+        kind,
+        position: at,
+        // face along the road, so a cow reads as standing in the traffic lane
+        quaternion: surfaceQuaternion(d, spinAlong(d, fwd)),
+        scale: 1,
+        colorA: kind === "cow" ? cowA : catA,
+        colorB: kind === "cow" ? cowB : catB,
+        seed: seed++,
+      })
+      break
+    }
+  })
 }
 
 /* --------------------------------------------------------- glb buildings */
@@ -2758,6 +2821,8 @@ const COLLIDER_SPECS: Partial<Record<PropKind, ColliderSpec>> = {
   // placeholder dims — every glb-building carries its real box on the prop
   // itself (PlacedProp.box), because each model's footprint differs
   "glb-building": { shape: "box", hx: 1, hz: 1, top: 1 },
+  // the cow is a deliberate obstacle; the cat is scenery you can walk through
+  cow: { shape: "box", hx: 0.42, hz: 0.85, top: 1.25 },
 }
 
 type Collider = {

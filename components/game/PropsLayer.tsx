@@ -240,6 +240,85 @@ function PropInstance({ p }: { p: PlacedProp }) {
   const quat = new THREE.Quaternion(p.quaternion.x, p.quaternion.y, p.quaternion.z, p.quaternion.w)
 
   switch (p.kind) {
+    case "cow":
+      // stands where it stands and does not move — the obstacle is the point
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          <mesh position={[0, 0.82, 0]} castShadow receiveShadow>
+            <boxGeometry args={[0.62, 0.56, 1.5]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {/* dark patch, so it reads as a cow and not a crate */}
+          <mesh position={[0.28, 0.86, 0.18]}>
+            <boxGeometry args={[0.1, 0.34, 0.5]} />
+            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+          </mesh>
+          <mesh position={[0, 0.95, 0.86]} castShadow>
+            <boxGeometry args={[0.38, 0.38, 0.4]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          <mesh position={[0, 0.78, 1.06]}>
+            <boxGeometry args={[0.26, 0.2, 0.12]} />
+            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+          </mesh>
+          {/* horns and the hump — the Indian humped zebu, not a dairy cow */}
+          {[-1, 1].map((s) => (
+            <mesh key={s} position={[s * 0.16, 1.16, 0.84]} rotation={[0, 0, s * 0.5]}>
+              <boxGeometry args={[0.07, 0.2, 0.07]} />
+              <meshToonMaterial color="#d8cfbc" gradientMap={toonGradient} />
+            </mesh>
+          ))}
+          <mesh position={[0, 1.12, 0.42]} castShadow>
+            <boxGeometry args={[0.34, 0.22, 0.36]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {[
+            [-0.22, 0.55],
+            [0.22, 0.55],
+            [-0.22, -0.5],
+            [0.22, -0.5],
+          ].map(([x, z], k) => (
+            <mesh key={k} position={[x, 0.27, z]} castShadow>
+              <boxGeometry args={[0.14, 0.54, 0.16]} />
+              <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            </mesh>
+          ))}
+          <mesh position={[0, 0.72, -0.78]} rotation={[0.35, 0, 0]}>
+            <boxGeometry args={[0.07, 0.5, 0.07]} />
+            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+          </mesh>
+        </group>
+      )
+    case "cat":
+      // curled up on a warm patch of ground
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          <mesh position={[0, 0.11, 0]} castShadow>
+            <boxGeometry args={[0.22, 0.19, 0.34]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          <mesh position={[0, 0.16, 0.19]} castShadow>
+            <boxGeometry args={[0.16, 0.15, 0.14]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {[-1, 1].map((s) => (
+            <mesh key={s} position={[s * 0.05, 0.25, 0.19]} rotation={[0, 0, s * 0.25]}>
+              <boxGeometry args={[0.05, 0.07, 0.04]} />
+              <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+            </mesh>
+          ))}
+          {/* tail curled round the body */}
+          <mesh position={[0.13, 0.05, -0.05]} rotation={[0, 0.7, 0]}>
+            <boxGeometry args={[0.05, 0.05, 0.3]} />
+            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+          </mesh>
+        </group>
+      )
     case "civic-pad":
       // draped onto the ground it covers — see CivicPad
       return <CivicPad p={p} />

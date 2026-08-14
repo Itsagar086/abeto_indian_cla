@@ -2,7 +2,6 @@
 
 import { useRef, useEffect, useMemo } from "react"
 import { useFrame, useThree } from "@react-three/fiber"
-import { Outlines } from "@react-three/drei"
 import * as THREE from "three"
 import { NPCS, PHYSICS, INITIAL_CHARACTER, ZONES } from "@/lib/game/data"
 import { terrainRadius } from "@/lib/game/terrain"
@@ -13,12 +12,20 @@ import {
   groundOrDeck,
   type PropHit,
 } from "@/lib/game/props"
+import {
+  BODY,
+  STRIDE_WALK,
+  STRIDE_RUN,
+  characterPose,
+  emptyPose,
+  footPlanZ,
+} from "@/lib/game/character"
 import { useGameStore } from "@/lib/game/store"
 import { playerState } from "@/lib/game/playerState"
-import { toonGradient } from "@/lib/game/toon"
+import { Character, AARAV } from "./Character"
 
 /** x1.4 for the 1.6x world — a road takes ~1.15x the old time to walk */
-const MOVE_SPEED = 0.154
+const MOVE_SPEED = 0.075
 const TURN_SPEED = 2.6
 /** world units, and neither the character nor the NPCs grew — unchanged */
 const TALK_DISTANCE = 2.4
@@ -82,6 +89,7 @@ const _hit: PropHit = { normal: new THREE.Vector3(), depth: 0 }
 /** scratch for the camera work — keeps the frame allocation-free */
 const _camDir = new THREE.Vector3()
 const _eye = new THREE.Vector3()
+const _footProbe = new THREE.Vector3()
 const _losDir = new THREE.Vector3()
 const _losSample = new THREE.Vector3()
 const _losProbe = new THREE.Vector3()
@@ -111,6 +119,14 @@ export function Player() {
   const keys = useKeys()
   const groupRef = useRef<THREE.Group>(null)
   const bodyRef = useRef<THREE.Group>(null)
+  /** blended animation state: 0 idle, 1 walk, 2 run */
+  const gait = useRef(0)
+  const airBlend = useRef(0)
+  const carryBlend = useRef(0)
+  const pose = useRef(emptyPose())
+  const poseInput = useRef({
+    gait: 0, phase: 0, time: 0, air: 0, rising: 0, carry: 0, groundL: 0, groundR: 0,
+  })
 
   const position = useRef(new THREE.Vector3(...INITIAL_CHARACTER.position))
   const velocity = useRef(new THREE.Vector3())
@@ -171,7 +187,7 @@ export function Player() {
     return () => window.removeEventListener("keydown", onKey)
   }, [])
 
-  useFrame((_, rawDelta) => {
+  useFrame((state, rawDelta) => {
     const delta = Math.min(rawDelta, 1 / 30)
     const dt60 = delta * 60
     const k = keys.current
@@ -268,13 +284,52 @@ export function Player() {
       groupRef.current.quaternion.slerp(targetQuat, 0.25)
     }
 
-    // little walking bob
+    // ---- character animation
+    //
+    // The gait phase advances with DISTANCE TRAVELLED, not with time: one
+    // stance carries the foot 2x stride backward relative to the body, so
+    // tying the cycle to ground distance makes the planted foot world-static.
+    // A time-driven cycle is exactly what foot skating is.
+    const tangentSpeed = velocity.current
+      .clone()
+      .sub(upNow.clone().multiplyScalar(velocity.current.dot(upNow)))
+      .length()
     const isMoving = moveInput !== 0 && grounded.current
-    stepPhase.current += isMoving ? delta * (sprint ? 16 : 10) : 0
-    if (bodyRef.current) {
-      bodyRef.current.position.y = isMoving ? Math.abs(Math.sin(stepPhase.current)) * 0.06 : 0
-      bodyRef.current.rotation.z = isMoving ? Math.sin(stepPhase.current) * 0.05 : 0
+    const gaitTarget = !isMoving ? 0 : sprint ? 2 : 1
+    gait.current += (gaitTarget - gait.current) * Math.min(1, delta * 9)
+    const runW = Math.max(0, Math.min(1, gait.current - 1))
+    const stride = STRIDE_WALK + (STRIDE_RUN - STRIDE_WALK) * runW
+    if (isMoving) {
+      // signed: walking backwards runs the cycle backwards
+      stepPhase.current += (Math.sign(moveInput) * tangentSpeed * dt60) / (4 * stride)
     }
+    airBlend.current += ((grounded.current ? 0 : 1) - airBlend.current) * Math.min(1, delta * 10)
+    carryBlend.current += ((carrying ? 1 : 0) - carryBlend.current) * Math.min(1, delta * 6)
+
+    // ground under each foot, so the planted foot meets a slope instead of
+    // hovering over it or sinking into it
+    const rootG = groundOrDeck(upNow)
+    const footGround = (lateral: number, ahead: number) => {
+      _footProbe
+        .copy(position.current)
+        .addScaledVector(right, lateral)
+        .addScaledVector(fwd, ahead)
+        .normalize()
+      const g = groundOrDeck(_footProbe) - rootG
+      return Math.max(-0.25, Math.min(0.25, g))
+    }
+    const poseIn = poseInput.current
+    poseIn.gait = gait.current
+    poseIn.phase = stepPhase.current
+    poseIn.time = state.clock.elapsedTime
+    poseIn.air = airBlend.current
+    poseIn.rising = velocity.current.dot(upNow)
+    poseIn.carry = carryBlend.current
+    // the foot's forward offset is known from the phase alone, so the ground
+    // is sampled exactly under where the foot lands — no one-frame lag
+    poseIn.groundL = footGround(-BODY.hipX, footPlanZ(stepPhase.current, gait.current, "L"))
+    poseIn.groundR = footGround(BODY.hipX, footPlanZ(stepPhase.current, gait.current, "R"))
+    characterPose(poseIn, pose.current)
 
     // camera: trail behind the player along -forward, offset up
     const behind = forward.current.clone().multiplyScalar(-INITIAL_CHARACTER.relativeCameraPosition[2])
@@ -383,44 +438,7 @@ export function Player() {
   return (
     <group ref={groupRef}>
       <group ref={bodyRef}>
-        {/* legs */}
-        <mesh position={[0, 0.35, 0]} castShadow>
-          <cylinderGeometry args={[0.13, 0.13, 0.7, 8]} />
-          <meshToonMaterial color="#2b2723" gradientMap={toonGradient} />
-          <Outlines thickness={0.03} color="#2c2620" />
-        </mesh>
-        {/* kurta */}
-        <mesh position={[0, 0.98, 0]} castShadow>
-          <capsuleGeometry args={[0.25, 0.55, 4, 8]} />
-          <meshToonMaterial color="#3f7f5c" gradientMap={toonGradient} />
-          <Outlines thickness={0.03} color="#2c2620" />
-        </mesh>
-        {/* head */}
-        <mesh position={[0, 1.55, 0]} castShadow>
-          <sphereGeometry args={[0.22, 12, 12]} />
-          <meshToonMaterial color="#caa06e" gradientMap={toonGradient} />
-          <Outlines thickness={0.03} color="#2c2620" />
-        </mesh>
-        {/* hair */}
-        <mesh position={[0, 1.66, 0]}>
-          <sphereGeometry args={[0.23, 12, 12, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
-          <meshToonMaterial color="#241f19" gradientMap={toonGradient} />
-          <Outlines thickness={0.03} color="#2c2620" />
-        </mesh>
-        {/* satchel bag, always worn */}
-        <mesh position={[0.22, 1.0, -0.05]} rotation={[0, 0, 0.2]} castShadow>
-          <boxGeometry args={[0.28, 0.32, 0.16]} />
-          <meshToonMaterial color="#8a4a2c" gradientMap={toonGradient} />
-          <Outlines thickness={0.03} color="#2c2620" />
-        </mesh>
-        {/* carried parcel indicator */}
-        {carrying && (
-          <mesh position={[0, 1.95, 0]} castShadow>
-            <boxGeometry args={[0.22, 0.2, 0.22]} />
-            <meshToonMaterial color="#e0a53a" gradientMap={toonGradient} />
-            <Outlines thickness={0.03} color="#2c2620" />
-          </mesh>
-        )}
+        <Character pose={pose} skin={AARAV} carrying={!!carrying} />
       </group>
     </group>
   )
