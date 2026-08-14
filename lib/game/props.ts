@@ -1021,6 +1021,13 @@ export type BridgeSpan = {
   piers: number
   /** deck half-width: arterial crossings are wider than local-road ones */
   halfWidth: number
+  /**
+   * TRUE for the arterial crossings: their t values are positions along the
+   * metro LOOP, not angles along a zone-to-zone arc. The road follows the
+   * loop, so its bridges must too — built on the arcs they slid up to 4.1u
+   * off the deck the moment the loop was offset past the hubs (P54).
+   */
+  onLoop?: boolean
 }
 
 /** point on a road arc at angle `t` from `a`, toward `b` */
@@ -1040,7 +1047,17 @@ function arcPoint(
 }
 
 /** every stretch of every road that runs below the waterline */
-const BRIDGE_SPANS: BridgeSpan[] = (() => {
+let _bridgeSpans: BridgeSpan[] | null = null
+
+/**
+ * Every wet stretch that needs a deck. LOCAL roads are scanned along their own
+ * great-circle arcs, as always. The ARTERIAL crossings are scanned along the
+ * metro loop instead, because that is what the road actually follows — see
+ * BridgeSpan.onLoop. Lazy rather than module-load so the scan sees the
+ * finished terrain (plot grading registers mid-build).
+ */
+function bridgeSpans(): BridgeSpan[] {
+  if (_bridgeSpans) return _bridgeSpans
   const byId = new Map(ZONES.map((z) => [z.id, z]))
   const spans: BridgeSpan[] = []
   const dir = new THREE.Vector3()
@@ -1068,66 +1085,19 @@ const BRIDGE_SPANS: BridgeSpan[] = (() => {
           let tB = Math.min(omega, end + BRIDGE_RAMP)
           const worldLength = arc * BRIDGE_DECK_R
           const [pa, pb] = ROAD_PAIRS[road]
-          // read off METRO_ZONE_IDS, not ARTERIAL_PAIRS: this runs at module
-          // load and ARTERIAL_PAIRS is declared further down the file
+          // Arterial crossings are NOT built here — they are scanned along
+          // the loop below, because the road follows the loop and not this
+          // arc. Skip them so a wet stretch is never decked twice.
           const arterial = METRO_ZONE_IDS.some((id, k) => {
             const next = METRO_ZONE_IDS[(k + 1) % METRO_ZONE_IDS.length]
             return (id === pa && next === pb) || (id === pb && next === pa)
           })
           if (arterial) {
-            // The corridor stops drawing while EITHER verge probe (±3.95u, the
-            // corridor's own dry rule — literal for the same load-order reason
-            // as the half-width above) still touches water, which is inland of
-            // the waterline. Walk each ramp foot out until the ground it lands
-            // on is dry across the full cross-section, else neither surface
-            // covers the in-between and the handoff is a 1.1u cliff onto bare
-            // terrain (measured, both gorge crossings).
-            const n = new THREE.Vector3().crossVectors(a, b).normalize()
-            const q = new THREE.Vector3()
-            const edgeWet = (t: number) => {
-              arcPoint(a, b, omega, t, dir)
-              const r = terrainRadius(dir)
-              if (r < WET_MARK) return true
-              for (const s of [1, -1]) {
-                q.copy(dir).addScaledVector(n, (s * 3.95) / r).normalize()
-                if (terrainRadius(q) < WET_MARK) return true
-              }
-              return false
-            }
-            while (tA > 0 && edgeWet(tA)) tA = Math.max(0, tA - BRIDGE_SAMPLE)
-            while (tB < omega && edgeWet(tB)) tB = Math.min(omega, tB + BRIDGE_SAMPLE)
-            // The two arterial crossings are gorges, and the capped profile
-            // dives down their rims at up to grade ~1 — a ski-jump road. Any
-            // approach steeper than a rideable grade is swallowed by the
-            // bridge instead: the ramp foot walks uphill until the profile
-            // is gentle, and the deck (spanDeckR) then spans level with it.
-            const APPROACH_GRADE = 0.35
-            const gradeAt = (t: number) => {
-              arcPoint(a, b, omega, t, dir)
-              const lt = nearestLoopT(dir)
-              const d = 0.02
-              const r = loopProfileAt(lt)
-              return Math.abs(loopProfileAt(lt + d) - loopProfileAt(lt - d)) / (2 * d * r)
-            }
-            let extra = 0.3 // rad, per side — keeps the walk out of the hubs
-            while (tA > 0 && extra > 0 && gradeAt(tA) > APPROACH_GRADE) {
-              tA = Math.max(0, tA - BRIDGE_SAMPLE)
-              extra -= BRIDGE_SAMPLE
-            }
-            extra = 0.3
-            while (tB < omega && extra > 0 && gradeAt(tB) > APPROACH_GRADE) {
-              tB = Math.min(omega, tB + BRIDGE_SAMPLE)
-              extra -= BRIDGE_SAMPLE
-            }
-            // one corridor sample spacing (0.015 rad — literal for load order)
-            // of overlap: the corridor drops a whole SEGMENT when either end
-            // sample is wet, so its coverage retreats up to one spacing past
-            // the last edge-wet point and the deck must reach in under it
-            tA = Math.max(0, tA - 0.015)
-            tB = Math.min(omega, tB + 0.015)
+            runStart = null
+            continue
           }
           spans.push({
-            halfWidth: arterial ? BRIDGE_ARTERIAL_HALF_WIDTH : BRIDGE_HALF_WIDTH,
+            halfWidth: BRIDGE_HALF_WIDTH,
             road,
             t0: runStart,
             t1: end,
@@ -1142,12 +1112,95 @@ const BRIDGE_SPANS: BridgeSpan[] = (() => {
       }
     }
   })
+
+  // ---- arterial crossings, scanned along the LOOP itself
+  {
+    const total = METRO_LOOP.total
+    const probe = new THREE.Vector3()
+    const right = new THREE.Vector3()
+    const ahead = new THREE.Vector3()
+    const behind = new THREE.Vector3()
+    const q = new THREE.Vector3()
+    const loopAt = (t: number) => sampleLoopDirs(METRO_LOOP.dirs, METRO_LOOP.n, METRO_LOOP.step, t, probe)
+    /** the corridor's own dry rule: centre plus both verges must be clear */
+    const edgeWet = (t: number) => {
+      loopAt(t)
+      const r = terrainRadius(probe)
+      if (r < WET_MARK) return true
+      const d = probe.clone()
+      sampleLoopDirs(METRO_LOOP.dirs, METRO_LOOP.n, METRO_LOOP.step, t + 0.01, ahead)
+      sampleLoopDirs(METRO_LOOP.dirs, METRO_LOOP.n, METRO_LOOP.step, t - 0.01, behind)
+      const fwd = ahead.clone().sub(behind)
+      fwd.addScaledVector(d, -fwd.dot(d))
+      if (fwd.lengthSq() < 1e-12) return false
+      right.crossVectors(fwd.normalize(), d).normalize()
+      for (const s of [1, -1]) {
+        q.copy(d).addScaledVector(right, (s * BRIDGE_ARTERIAL_HALF_WIDTH) / r).normalize()
+        if (terrainRadius(q) < WET_MARK) return true
+      }
+      return false
+    }
+    const gradeAt = (t: number) => {
+      const d = 0.02
+      const r = loopProfileAt(t)
+      return Math.abs(loopProfileAt(t + d) - loopProfileAt(t - d)) / (2 * d * r)
+    }
+
+    const steps = Math.ceil(total / BRIDGE_SAMPLE)
+    let runStart: number | null = null
+    for (let i = 0; i <= steps; i++) {
+      const t = Math.min(i * BRIDGE_SAMPLE, total)
+      const wet = terrainRadius(loopAt(t)) < WET_MARK
+      if (wet && runStart === null) runStart = t
+      if ((!wet || i === steps) && runStart !== null) {
+        const end = wet ? t : t - BRIDGE_SAMPLE
+        const arc = end - runStart
+        if (arc >= MIN_SPAN) {
+          let tA = runStart - BRIDGE_RAMP
+          let tB = end + BRIDGE_RAMP
+          // walk each ramp foot out until the ground under the full
+          // cross-section is dry, then until the approach is rideable
+          while (edgeWet(tA) && runStart - tA < 0.5) tA -= BRIDGE_SAMPLE
+          while (edgeWet(tB) && tB - end < 0.5) tB += BRIDGE_SAMPLE
+          const APPROACH_GRADE = 0.35
+          let extra = 0.3
+          while (extra > 0 && gradeAt(tA) > APPROACH_GRADE) {
+            tA -= BRIDGE_SAMPLE
+            extra -= BRIDGE_SAMPLE
+          }
+          extra = 0.3
+          while (extra > 0 && gradeAt(tB) > APPROACH_GRADE) {
+            tB += BRIDGE_SAMPLE
+            extra -= BRIDGE_SAMPLE
+          }
+          // one corridor sample of overlap, as on the arc scan
+          tA -= CORRIDOR_STEP
+          tB += CORRIDOR_STEP
+          const worldLength = arc * BRIDGE_DECK_R
+          spans.push({
+            halfWidth: BRIDGE_ARTERIAL_HALF_WIDTH,
+            road: -1,
+            onLoop: true,
+            t0: runStart,
+            t1: end,
+            tA,
+            tB,
+            arc,
+            worldLength,
+            piers: Math.max(1, Math.round(worldLength / PIER_SPACING)),
+          })
+        }
+        runStart = null
+      }
+    }
+  }
+  _bridgeSpans = spans
   return spans
-})()
+}
 
 export function bridgeReport() {
-  return BRIDGE_SPANS.map((s) => ({
-    road: `${ROAD_PAIRS[s.road][0]}-${ROAD_PAIRS[s.road][1]}`,
+  return bridgeSpans().map((s) => ({
+    road: s.onLoop ? "arterial(loop)" : `${ROAD_PAIRS[s.road][0]}-${ROAD_PAIRS[s.road][1]}`,
     arc: s.arc,
     worldLength: s.worldLength,
     piers: s.piers,
@@ -1212,9 +1265,10 @@ function spanBanks(
 ): readonly [number, number] {
   const probe = new THREE.Vector3()
   const bank = (t: number) => {
+    // an arterial span's t IS a loop position, so the profile is read
+    // directly — no nearest-point search, no arc-to-loop translation
+    if (span.onLoop) return loopProfileAt(t) + ASPHALT_LIFT - DECK_TOP
     arcPoint(a, b, omega, t, probe)
-    if (span.halfWidth === BRIDGE_ARTERIAL_HALF_WIDTH && NET)
-      return loopProfileAt(nearestLoopT(probe)) + ASPHALT_LIFT - DECK_TOP
     return terrainRadius(probe)
   }
   return [bank(span.tA), bank(span.tB)]
@@ -1222,7 +1276,7 @@ function spanBanks(
 
 /** is this point on a road covered by a bridge, ramps included? */
 function onBridge(road: number, angle: number) {
-  for (const s of BRIDGE_SPANS) {
+  for (const s of bridgeSpans()) {
     if (s.road === road && angle >= s.tA && angle <= s.tB) return true
   }
   return false
@@ -1267,19 +1321,26 @@ function placeBridges(props: PlacedProp[]) {
   const [pierA, pierB] = KIND_COLORS["bridge-pier"] ?? ["#a89e90", "#8d8478"]
   let seed = 1800
 
-  for (const span of BRIDGE_SPANS) {
-    const [idA, idB] = ROAD_PAIRS[span.road]
-    const za = byId.get(idA)
-    const zb = byId.get(idB)
-    if (!za || !zb) continue
-    const a = new THREE.Vector3(...za.center).normalize()
-    const b = new THREE.Vector3(...zb.center).normalize()
-    const omega = a.angleTo(b)
+  for (const span of bridgeSpans()) {
+    let a = new THREE.Vector3()
+    let b = new THREE.Vector3()
+    let omega = 0
+    if (!span.onLoop) {
+      const [idA, idB] = ROAD_PAIRS[span.road]
+      const za = byId.get(idA)
+      const zb = byId.get(idB)
+      if (!za || !zb) continue
+      a = new THREE.Vector3(...za.center).normalize()
+      b = new THREE.Vector3(...zb.center).normalize()
+      omega = a.angleTo(b)
+    }
 
     const [bankA, bankB] = spanBanks(span, a, b, omega)
     const deckR = spanDeckR(span, bankA, bankB)
 
-    const dirAt = (t: number, target: THREE.Vector3) => arcPoint(a, b, omega, t, target)
+    // an arterial span walks the LOOP; a local-road span walks its own arc
+    const dirAt = (t: number, target: THREE.Vector3) =>
+      span.onLoop ? loopDir(t, target) : arcPoint(a, b, omega, t, target)
     const pointAt = (t: number, target: THREE.Vector3) =>
       dirAt(t, target).multiplyScalar(bridgeHeight(span, t, bankA, bankB, deckR))
 
@@ -1590,7 +1651,9 @@ function placeRoadFurniture(props: PlacedProp[]) {
       // Road board mid-carriageway (the corridor follows the spline, not the
       // arc this walk measures on, and is far wider than the ribbon).
       let dir: THREE.Vector3 | null = null
-      for (let k = SIGN_OFFSET; k <= 0.26; k += 0.03) {
+      // range widened in P54: with the arterial offset past the hubs, a board
+      // near a zone centre can need to sit further out to clear the corridor
+      for (let k = SIGN_OFFSET; k <= 0.42; k += 0.03) {
         const cand = offsetDir(onRoad, perp, k * side)
         if (roadDistance(cand) < RIBBON_CLEAR) continue
         if (arterialDistance(cand) < CORRIDOR_SUPPRESS) continue
@@ -2055,20 +2118,18 @@ const ARTERIAL_ARCS: Arterial[] = (() => {
 const _artProbe = new THREE.Vector3()
 
 /** lateral world distance from `dir` to the nearest arterial centreline */
+/**
+ * World distance to the arterial CENTRELINE — the line the corridor is
+ * actually drawn from, i.e. the metro loop.
+ *
+ * This used to measure to the great-circle arcs between zone centres, which
+ * was near enough while the loop hugged them. Once the loop was offset to pass
+ * the hubs tangentially (P54) the two diverge by up to 9u, and every consumer
+ * of this — road-furniture suppression, civic plot clearance, signboard and
+ * signal placement — was aiming at empty ground while the road ran elsewhere.
+ */
 export function arterialDistance(dir: THREE.Vector3) {
-  let best = Infinity
-  for (const arc of ARTERIAL_ARCS) {
-    const along = _artProbe.copy(dir).projectOnPlane(arc.n)
-    if (along.lengthSq() < 1e-9) continue
-    along.normalize()
-    const ab = arc.a.dot(arc.b)
-    const inside = along.dot(arc.a) >= ab - 1e-4 && along.dot(arc.b) >= ab - 1e-4
-    const ang = inside
-      ? Math.abs(Math.asin(Math.max(-1, Math.min(1, dir.dot(arc.n)))))
-      : Math.min(dir.angleTo(arc.a), dir.angleTo(arc.b))
-    if (ang < best) best = ang
-  }
-  return best === Infinity ? Infinity : best * terrainRadius(dir)
+  return loopAngle(dir) * terrainRadius(dir)
 }
 
 /* --- cross-section, in world units either side of the centreline --------- */
@@ -2285,11 +2346,24 @@ const _dryProbe = new THREE.Vector3()
  */
 function ownDeckAbove(dir: THREE.Vector3, ground: number, idA: string, idB: string) {
   for (const d of decks()) {
-    const [pa, pb] = ROAD_PAIRS[d.span.road]
-    if (!((pa === idA && pb === idB) || (pa === idB && pb === idA))) continue
-    const t = Math.atan2(dir.dot(d.perp), dir.dot(d.a))
-    if (t < d.span.tA || t > d.span.tB) continue
-    const lateral = Math.abs(Math.asin(Math.max(-1, Math.min(1, dir.dot(d.n))))) * d.deckR
+    let t: number
+    let lateral: number
+    if (d.span.onLoop) {
+      // an arterial deck belongs to the corridor by construction — the
+      // corridor and the deck are both on the loop
+      t = nearestLoopT(dir)
+      const total = METRO_LOOP.total
+      while (t < d.span.tA - total / 2) t += total
+      while (t > d.span.tA + total / 2) t -= total
+      if (t < d.span.tA || t > d.span.tB) continue
+      lateral = loopAngle(dir) * d.deckR
+    } else {
+      const [pa, pb] = ROAD_PAIRS[d.span.road]
+      if (!((pa === idA && pb === idB) || (pa === idB && pb === idA))) continue
+      t = Math.atan2(dir.dot(d.perp), dir.dot(d.a))
+      if (t < d.span.tA || t > d.span.tB) continue
+      lateral = Math.abs(Math.asin(Math.max(-1, Math.min(1, dir.dot(d.n))))) * d.deckR
+    }
     if (lateral > d.span.halfWidth) continue
     // 2.5u: only the genuinely diving ghost road is culled — at +1 the rule
     // also bit under the descending ramp feet and punched 1u holes in the
@@ -3135,7 +3209,21 @@ function decks(): DeckSpan[] {
   const byId = new Map(ZONES.map((z) => [z.id, z]))
   const out: DeckSpan[] = []
   const probe = new THREE.Vector3()
-  for (const span of BRIDGE_SPANS) {
+  for (const span of bridgeSpans()) {
+    if (span.onLoop) {
+      // no arc frame: the query maps straight onto the loop
+      const [bankA, bankB] = spanBanks(span, probe, probe, 0)
+      out.push({
+        span,
+        a: new THREE.Vector3(),
+        n: new THREE.Vector3(),
+        perp: new THREE.Vector3(),
+        bankA,
+        bankB,
+        deckR: spanDeckR(span, bankA, bankB),
+      })
+      continue
+    }
     const [idA, idB] = ROAD_PAIRS[span.road]
     const za = byId.get(idA)
     const zb = byId.get(idB)
@@ -3168,11 +3256,25 @@ function decks(): DeckSpan[] {
 export function bridgeSurface(dir: THREE.Vector3): number | null {
   let best: number | null = null
   for (const d of decks()) {
-    const t = Math.atan2(dir.dot(d.perp), dir.dot(d.a))
-    if (t < d.span.tA || t > d.span.tB) continue
+    let t: number
+    let lateral: number
+    if (d.span.onLoop) {
+      // the arterial decks ride the loop, so the query is projected onto it
+      t = nearestLoopT(dir)
+      // unwrap into the span's window, which may straddle the loop seam
+      const total = METRO_LOOP.total
+      while (t < d.span.tA - total / 2) t += total
+      while (t > d.span.tA + total / 2) t -= total
+      if (t < d.span.tA || t > d.span.tB) continue
+      lateral = loopAngle(dir) * terrainRadius(dir)
+    } else {
+      t = Math.atan2(dir.dot(d.perp), dir.dot(d.a))
+      if (t < d.span.tA || t > d.span.tB) continue
+      lateral = Math.abs(Math.asin(Math.max(-1, Math.min(1, dir.dot(d.n)))))
+    }
     const height = bridgeHeight(d.span, t, d.bankA, d.bankB, d.deckR)
     // lateral offset from the centreline, as a world distance at deck height
-    const lateral = Math.abs(Math.asin(Math.max(-1, Math.min(1, dir.dot(d.n))))) * height
+    if (!d.span.onLoop) lateral *= height
     if (lateral > d.span.halfWidth) continue
     const surface = height + DECK_TOP
     if (best === null || surface > best) best = surface

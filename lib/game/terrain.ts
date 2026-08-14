@@ -233,6 +233,36 @@ function planLoop(): number[] {
   return tour
 }
 
+/**
+ * The arterial passes each zone TANGENTIALLY, not through its centre.
+ *
+ * The loop is seeded from the zone centres, which are terrain anchors and may
+ * never move — so instead the control points NEAR each hub are pushed sideways
+ * with a smoothstep falloff, and the ribbon bows around the zone. Before this,
+ * the centreline passed 0.0–0.4u from every zone centre and ran straight
+ * through the market, the mill sheds and the temple ensemble: 74 props and
+ * villagers stood inside the surfaced width. After, 8.4–9.0u (beach 6.6u,
+ * pulled back by its neighbours' bows) and 2 remain.
+ *
+ * `side` is +1 or −1 about the local road direction, chosen per zone by
+ * measuring which side leaves more buildable ground inside the zone radius.
+ */
+const HUB_OFFSET: Record<string, { side: number; dist: number }> = {
+  bazaar: { side: -1, dist: 9 },
+  mill: { side: -1, dist: 9 },
+  ghat: { side: 1, dist: 9 },
+  haveli: { side: -1, dist: 9 },
+  grove: { side: 1, dist: 9 },
+  samadhi: { side: -1, dist: 9 },
+  workshop: { side: 1, dist: 9 },
+  temple: { side: -1, dist: 9 },
+  // Sampangi Kere gains nothing from this — its ground is too steep to build
+  // on either way — but it is offset for a consistent ribbon.
+  beach: { side: 1, dist: 9 },
+}
+/** angular window over which a hub's push falls off to nothing */
+const HUB_OFFSET_WINDOW = 0.5
+
 /** even arc-length resample spacing (radians) — one sample ≈ 0.8 world units */
 const LOOP_SAMPLE = 0.02
 /**
@@ -280,6 +310,36 @@ export const METRO_LOOP: MetroLoop = (() => {
               .addScaledVector(b, Math.sin(t) / sin)
               .normalize(),
       )
+    }
+  }
+
+  // ---- push the controls near each hub aside, so the road passes tangentially
+  for (let i = 0; i < order.length; i++) {
+    const zi = order[i]
+    const off = HUB_OFFSET[ZONES[zi].id]
+    if (!off?.dist) continue
+    const Z = ZONE_DIRS_T[zi]
+    // the anchor's own radius: terrainRadius() cannot be called here, it is
+    // built ON this loop
+    const R = new THREE.Vector3(...ZONES[zi].center).length()
+    const prev = ZONE_DIRS_T[order[(i - 1 + order.length) % order.length]]
+    const next = ZONE_DIRS_T[order[(i + 1) % order.length]]
+    const din = Z.clone().sub(prev)
+    din.addScaledVector(Z, -din.dot(Z))
+    const dout = next.clone().sub(Z)
+    dout.addScaledVector(Z, -dout.dot(Z))
+    if (din.lengthSq() < 1e-12 || dout.lengthSq() < 1e-12) continue
+    // road direction through the hub = bisector of the two legs
+    const fwd = din.normalize().add(dout.normalize())
+    if (fwd.lengthSq() < 1e-12) continue
+    fwd.normalize()
+    const perp = new THREE.Vector3().crossVectors(fwd, Z).normalize()
+    for (const c of controls) {
+      const ang = c.angleTo(Z)
+      if (ang > HUB_OFFSET_WINDOW) continue
+      const x = ang / HUB_OFFSET_WINDOW
+      const fall = 1 - x * x * (3 - 2 * x)
+      c.addScaledVector(perp, (off.side * off.dist * fall) / R).normalize()
     }
   }
 
