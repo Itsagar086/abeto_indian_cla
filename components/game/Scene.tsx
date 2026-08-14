@@ -4,13 +4,20 @@ import { useMemo, useRef } from "react"
 import * as THREE from "three"
 import { useFrame } from "@react-three/fiber"
 import { buildPlanetGeometry, rng } from "@/lib/game/terrain"
+import { buildProps } from "@/lib/game/props"
 import { WATER_LEVEL } from "@/lib/game/data"
 import { Player } from "./Player"
 import { NpcLayer } from "./NpcLayer"
 import { PropsLayer } from "./PropsLayer"
 
 function Planet() {
-  const geometry = useMemo(() => buildPlanetGeometry(64), [])
+  // buildProps first: it registers the civic-plot grading with the terrain
+  // mid-build, and the planet mesh must sample the GRADED ground — built
+  // before registration it would show the old relief under every pad
+  const geometry = useMemo(() => {
+    buildProps()
+    return buildPlanetGeometry(64)
+  }, [])
   return (
     <mesh geometry={geometry} receiveShadow castShadow>
       <meshStandardMaterial vertexColors roughness={0.95} metalness={0} />

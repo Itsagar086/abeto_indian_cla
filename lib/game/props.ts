@@ -13,6 +13,8 @@ import {
   ROAD_MAX_FILL,
   loopProfileAt,
   loopWorldS,
+  registerPlotGrading,
+  PLOT_GRADE_RAMP,
 } from "./terrain"
 
 export type PropKind =
@@ -45,6 +47,7 @@ export type PropKind =
   | "nandi-statue"
   | "temple-steps"
   | "civic-pad"
+  | "glb-building"
 
 export type PlacedProp = {
   kind: PropKind
@@ -67,6 +70,14 @@ export type PlacedProp = {
    * arterial crossing is wider than a local-road one; nothing else uses it.
    */
   width?: number
+  /** GLB under public/, e.g. "/models/x.glb". Only "glb-building" uses this. */
+  modelPath?: string
+  /**
+   * Per-prop collision box (model units, multiplied by `scale`). Buildings
+   * carry their own footprint because every GLB differs, while COLLIDER_SPECS
+   * is keyed by kind.
+   */
+  box?: { hx: number; hz: number; top: number }
 }
 
 const PALETTE: Record<string, [string, string][]> = {
@@ -1596,8 +1607,15 @@ function placeRoadFurniture(props: PlacedProp[]) {
   })
 }
 
+let _builtProps: PlacedProp[] | null = null
+
 export function buildProps(): PlacedProp[] {
+  // ONE world per session. Building twice used to be merely wasteful; since
+  // plot grading registers with the terrain mid-build, a second build would
+  // site everything on already-graded ground and drift from the first.
+  if (_builtProps) return _builtProps
   const props: PlacedProp[] = []
+  _builtProps = props
   const byId = new Map(ZONES.map((z) => [z.id, z]))
 
   const add = (
@@ -1773,8 +1791,101 @@ export function buildProps(): PlacedProp[] {
   placeMetro(props)
   // last, so a plot can see every pillar, building and villager it must avoid
   placeCivicPads(props)
+  // after the pads: buildings stand on the SITED pad centres
+  placeGlbBuildings(props)
 
   return props
+}
+
+/* --------------------------------------------------------- glb buildings */
+
+export type GlbBuildingSpec = {
+  /** GLB under public/, e.g. "/models/glass-skyscraper-01.glb" */
+  path: string
+  /** civic plot id (CIVIC_PLOTS) whose sited pad this building stands on */
+  plot: string
+  /** uniform scale; 1 = the asset's authored real-world metres */
+  scale: number
+  /** collision half-extents + height in MODEL units (multiplied by scale) */
+  box: { hx: number; hz: number; top: number }
+}
+
+/**
+ * Buildings are data, not code: one entry per structure. The renderer
+ * (PropsLayer GlbBuilding) rebases each model so its bounding box is centred
+ * in X/Z with the base at y=0, converts materials to the project toon look,
+ * and stands it on a plinth — so an entry needs only path, plot, scale, box.
+ */
+export const GLB_BUILDINGS: GlbBuildingSpec[] = [
+  {
+    path: "/models/glass-skyscraper-01.glb",
+    plot: "itpark",
+    scale: 0.4,
+    box: { hx: 3.8, hz: 4.1, top: 26.3 },
+  },
+  {
+    path: "/models/apartments.glb",
+    plot: "apartments",
+    scale: 0.4,
+    box: { hx: 3.6, hz: 2.9, top: 12.3 },
+  },
+  // SUBSTITUTE: the brief asked for midrise-office-01.glb, which is not in
+  // public/models — deco-hotel-three-bay is the closest midrise block on hand
+  {
+    path: "/models/deco-hotel-three-bay.glb",
+    plot: "hospital",
+    scale: 0.4,
+    box: { hx: 3.72, hz: 3.12, top: 11.26 },
+  },
+  // SUBSTITUTE: station-building.glb is not in public/models either —
+  // deco-shopfront-row at 0.6 reads as a campus block row
+  {
+    path: "/models/deco-shopfront-row.glb",
+    plot: "college",
+    scale: 0.6,
+    box: { hx: 4.1, hz: 2.62, top: 5.27 },
+  },
+  {
+    path: "/models/bus-shelter-01.glb",
+    plot: "busstand",
+    scale: 1,
+    box: { hx: 2.1, hz: 0.75, top: 2.98 },
+  },
+  {
+    path: "/models/corner-store-01.glb",
+    plot: "cycleshop",
+    scale: 0.5,
+    box: { hx: 3.28, hz: 3.53, top: 6.2 },
+  },
+]
+
+function placeGlbBuildings(props: PlacedProp[]) {
+  let seed = 9100
+  for (const b of GLB_BUILDINGS) {
+    const site = _plotSiting?.find((s) => s.id === b.plot && s.ok)
+    if (!site) continue
+    const dir = site.dir.clone().normalize()
+    // facade: local +Z faces the nearest point of the corridor centreline.
+    // spinAlong aligns local +X, so pass the in-plane perpendicular — the
+    // same convention the signboards use.
+    const road = loopDir(nearestLoopT(dir), new THREE.Vector3())
+    const toward = arcTangent(dir, road)
+    const spin = toward ? spinAlong(dir, new THREE.Vector3().crossVectors(dir, toward)) : 0
+    // terrainRadius, not groundOrDeck: plots always sit clear of roads and
+    // decks, and groundOrDeck would re-enter buildProps via the ride cache
+    const h = terrainRadius(dir)
+    props.push({
+      kind: "glb-building",
+      position: dir.clone().multiplyScalar(h),
+      quaternion: surfaceQuaternion(dir, spin),
+      scale: b.scale,
+      colorA: "#ffffff",
+      colorB: "#ffffff",
+      seed: seed++,
+      modelPath: b.path,
+      box: b.box,
+    })
+  }
 }
 
 /* ------------------------------------------------------- arterial corridor */
@@ -2644,6 +2755,9 @@ const COLLIDER_SPECS: Partial<Record<PropKind, ColliderSpec>> = {
   // guardrails carry the ground under each post in aux since P33, which is the
   // same two-point form bridge-rail already uses
   guardrail: { shape: "rail", r: 0.12, top: GUARD_SHOW },
+  // placeholder dims — every glb-building carries its real box on the prop
+  // itself (PlacedProp.box), because each model's footprint differs
+  "glb-building": { shape: "box", hx: 1, hz: 1, top: 1 },
 }
 
 type Collider = {
@@ -2706,10 +2820,11 @@ function colliders(): Collider[] {
     const base = p.position.length()
 
     if (spec.shape === "box") {
-      const hx = spec.hx * p.scale
-      const hz = spec.hz * p.scale
+      // a prop may carry its own box (glb buildings — every model differs)
+      const hx = (p.box?.hx ?? spec.hx) * p.scale
+      const hz = (p.box?.hz ?? spec.hz) * p.scale
       out.push(
-        makeCollider("box", p.position, base - 0.5, base + spec.top * p.scale, Math.hypot(hx, hz), {
+        makeCollider("box", p.position, base - 0.5, base + (p.box?.top ?? spec.top) * p.scale, Math.hypot(hx, hz), {
           axisX: new THREE.Vector3(1, 0, 0).applyQuaternion(p.quaternion),
           axisZ: new THREE.Vector3(0, 0, 1).applyQuaternion(p.quaternion),
           hx,
@@ -3137,17 +3252,6 @@ function placeCivicPads(props: PlacedProp[]) {
       continue
     }
     pads.push({ dir: sited.dir, radius })
-    props.push({
-      kind: "civic-pad",
-      position: surfacePoint(sited.dir, 0),
-      quaternion: surfaceQuaternion(sited.dir, 0),
-      // the pad is a disc of this radius; the renderer divides its thickness
-      // back out so the slab stays 0.08u tall whatever the plot's size
-      scale: radius,
-      colorA: padA,
-      colorB: padB,
-      seed: seed++,
-    })
     report.push({
       id: plot.id, district: plot.district, anchorZone: plot.anchorZone,
       dir: sited.dir, radius, ground: sited.relief.r, band: sited.relief.band,
@@ -3158,7 +3262,86 @@ function placeCivicPads(props: PlacedProp[]) {
     })
   }
   _plotSiting = report
+
+  // Grade every sited plot level (terrain.ts) BEFORE any pad or building is
+  // positioned — the pads used to drape over 2.8–9.0u of relief and read as
+  // torn floating patches, and a plumb tower on the 13° itpark slope read as
+  // a 13° lean. Everything sampled from here on sees the graded ground.
+  registerPlotGrading(pads)
+
+  // Re-seat props the grading moved the ground under (anything inside a
+  // pad's ramp — measured up to 4.4u of float at the college pad). Guardrails
+  // recompute their post feet, poles carry their wires along; the remaining
+  // aux kinds (tracks, decks, pillars) are span-borne and never pad-adjacent.
+  const reach = PLOT_GRADE_RAMP
+  const nearPad = (pDir: THREE.Vector3, len: number) => {
+    for (const pad of pads) if (pDir.angleTo(pad.dir) * len <= pad.radius + reach) return true
+    return false
+  }
+  const poleTops: [THREE.Vector3, THREE.Vector3][] = []
+  for (const p of props) {
+    if (p.kind === "wire") continue
+    const pDir = _reseatV.copy(p.position).normalize()
+    if (!nearPad(pDir, p.position.length())) continue
+    if (p.kind === "utility-pole") {
+      const dirC = pDir.clone()
+      const oldTop = p.position.clone().addScaledVector(dirC, POLE_TIP)
+      p.position.setLength(terrainRadius(dirC))
+      poleTops.push([oldTop, p.position.clone().addScaledVector(dirC, POLE_TIP)])
+      continue
+    }
+    if (p.kind === "guardrail") {
+      const dirC = pDir.clone()
+      p.position.setLength(terrainRadius(dirC))
+      const axisX = new THREE.Vector3(1, 0, 0).applyQuaternion(p.quaternion)
+      const len = p.position.length()
+      const foot = (sx: number) => {
+        const probe = dirC.clone().addScaledVector(axisX, sx / len).normalize()
+        return probe.multiplyScalar(terrainRadius(probe))
+      }
+      p.aux = [foot(-GUARD_POST_X), foot(GUARD_POST_X)]
+      continue
+    }
+    if (p.aux) continue
+    p.position.setLength(terrainRadius(pDir))
+  }
+  // wires follow their poles: endpoints matching a moved pole's old top slide
+  // to the new one, and the sag midpoint re-centres
+  if (poleTops.length) {
+    for (const p of props) {
+      if (p.kind !== "wire" || !p.aux) continue
+      let moved = false
+      for (const [oldTop, newTop] of poleTops) {
+        if (p.aux[0].distanceTo(oldTop) < 0.01) {
+          p.aux[0] = newTop.clone()
+          moved = true
+        }
+        if (p.aux[1].distanceTo(oldTop) < 0.01) {
+          p.aux[1] = newTop.clone()
+          moved = true
+        }
+      }
+      if (moved) p.position.copy(p.aux[0]).add(p.aux[1]).multiplyScalar(0.5)
+    }
+  }
+
+  // pads last, sitting flush on the freshly graded (flat) ground
+  let padSeed = 9000
+  for (const pad of pads) {
+    props.push({
+      kind: "civic-pad",
+      position: surfacePoint(pad.dir, 0),
+      quaternion: surfaceQuaternion(pad.dir, 0),
+      // the pad is a disc of this radius; the renderer drapes it per-vertex
+      scale: pad.radius,
+      colorA: padA,
+      colorB: padB,
+      seed: padSeed++,
+    })
+  }
 }
+
+const _reseatV = new THREE.Vector3()
 
 /* ------------------------------------------------- what you stand on */
 

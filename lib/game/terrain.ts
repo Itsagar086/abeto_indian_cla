@@ -531,6 +531,33 @@ export function loopWorldS(t: number) {
   return wraps * cum[n] + cum[i] + (cum[i + 1] - cum[i]) * f
 }
 
+/* ---------------------------------------------------- civic plot grading */
+
+/**
+ * Civic plot sites are graded LEVEL the same way the corridor band is graded
+ * to the road profile: flat core covering the pad, smoothstep ramp back to
+ * the natural landform. Sites are only known once props.ts has run its ring
+ * search (it needs pillars, buildings and villagers), so it registers them
+ * here mid-build; everything sampled afterwards — the planet mesh included —
+ * sees the graded ground. Ungraded, the pads sat on 2.8–9.0u of relief and
+ * read as torn floating patches, and a plumb tower on a 13° sloped pad read
+ * as a 13° lean.
+ */
+export type PlotGradeSite = { dir: THREE.Vector3; radius: number }
+let _plotGrades: { dir: THREE.Vector3; radius: number; level: number }[] = []
+/** ramp width from pad edge back to natural ground, world units */
+export const PLOT_GRADE_RAMP = 3
+
+export function registerPlotGrading(sites: PlotGradeSite[]) {
+  // levels are sampled BEFORE the list is installed, so each plot's level is
+  // the road-graded (but plot-ungraded) ground at its own centre
+  const grades = sites.map((s) => {
+    const dir = s.dir.clone().normalize()
+    return { dir, radius: s.radius, level: terrainRadius(dir) }
+  })
+  _plotGrades = grades
+}
+
 /**
  * Surface radius at a (normalised) direction: the natural landform, graded
  * toward the road profile inside the corridor band. The road-height term is a
@@ -574,16 +601,21 @@ export function terrainRadius(dir: THREE.Vector3) {
       }
     }
   }
-  if (wsum <= 1e-6) return nat
+  // NOTE both far-from-road exits still pass through plotGrade — plots sit
+  // 6u+ off the corridor, exactly where these fire
+  if (wsum <= 1e-6) return plotGrade(dir, nat, nat)
   const latMin = Math.acos(Math.max(-1, Math.min(1, bd))) * nat
-  if (latMin >= GRADE_OUT) return nat
+  if (latMin >= GRADE_OUT) return plotGrade(dir, nat, nat)
   const road = psum / wsum
   const x = (latMin - GRADE_FULL) / (GRADE_OUT - GRADE_FULL)
   let f = x <= 0 ? 1 : x >= 1 ? 0 : 1 - x * x * (3 - 2 * x)
   // fade the grading out where few dry samples remain (mid-crossing), so the
   // ill-conditioned average never steers the ground
   if (wsum < 2) f *= wsum / 2
-  let r = nat + (road - nat) * f
+  // plot grading first, the corridor cap below stays authoritative: a pad
+  // ramp may reach toward a road edge, and ground the ramp lifts must still
+  // never rise above the deck
+  let r = plotGrade(dir, nat + (road - nat) * f, nat)
   // The averaged road height overshoots the actual deck in profile sags,
   // where a second leg feeds the kernel at a hub, AND on hillside cuts (the
   // feathered blend leaves the cut floor above the deck — grass sheeted over
@@ -624,6 +656,26 @@ export function terrainRadius(dir: THREE.Vector3) {
     }
   }
   return r
+}
+
+/** level the ground toward the nearest registered plot's pad level */
+function plotGrade(dir: THREE.Vector3, r: number, nat: number) {
+  let bestF = 0
+  let bestLevel = 0
+  for (let i = 0; i < _plotGrades.length; i++) {
+    const g = _plotGrades[i]
+    const d = dir.dot(g.dir)
+    if (d < 0.9) continue
+    const lat = Math.acos(Math.min(1, d)) * nat
+    const x = (lat - g.radius) / PLOT_GRADE_RAMP
+    const f = x <= 0 ? 1 : x >= 1 ? 0 : 1 - x * x * (3 - 2 * x)
+    // nearest wins: plots keep mutual clearance, but two RAMPS may brush
+    if (f > bestF) {
+      bestF = f
+      bestLevel = g.level
+    }
+  }
+  return bestF > 0 ? r + (bestLevel - r) * bestF : r
 }
 
 /** convenience: surface radius for an arbitrary (unnormalised) position */

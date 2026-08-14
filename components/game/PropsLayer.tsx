@@ -1,8 +1,8 @@
 "use client"
 
-import { useLayoutEffect, useMemo, useRef, type ReactNode } from "react"
+import { Suspense, useLayoutEffect, useMemo, useRef, type ReactNode } from "react"
 import * as THREE from "three"
-import { Outlines } from "@react-three/drei"
+import { Outlines, useGLTF } from "@react-three/drei"
 import { useFrame } from "@react-three/fiber"
 import {
   buildProps,
@@ -12,6 +12,7 @@ import {
   BRIDGE_HALF_WIDTH,
   GUARD_SHOW,
   GUARD_ROOT,
+  GLB_BUILDINGS,
   type CorridorMesh,
   type PlacedProp,
 } from "@/lib/game/props"
@@ -153,6 +154,87 @@ function Ink() {
   return <Outlines thickness={EDGE} color={INK} />
 }
 
+/**
+ * Assets from threejsassets.com are Draco-compressed; the decoder ships with
+ * three and is served from public/draco (no CDN dependency).
+ */
+const DRACO_PATH = "/draco/"
+for (const b of GLB_BUILDINGS) useGLTF.preload(b.path, DRACO_PATH)
+
+/**
+ * A GLB stood on the round world. The loaded scene is rebased so its bounding
+ * box is centred in X/Z with the base exactly at y=0 — models are authored
+ * with arbitrary origins (the skyscraper's sits at mid-height) and the
+ * placement code must be able to trust "position = the ground point".
+ * Materials are swapped for the project's toon look (keeping each mesh's own
+ * base colour and vertex colours) with the standard ink outline, and a buried
+ * plinth bridges the downhill gap on sloped sites so the base never shows air.
+ */
+function GlbBuilding({ p }: { p: PlacedProp }) {
+  const { scene } = useGLTF(p.modelPath!, DRACO_PATH)
+  const pos = p.position.toArray() as [number, number, number]
+  const quat = new THREE.Quaternion(p.quaternion.x, p.quaternion.y, p.quaternion.z, p.quaternion.w)
+  const parts = useMemo(() => {
+    scene.updateMatrixWorld(true)
+    const box = new THREE.Box3().setFromObject(scene)
+    const rebase = new THREE.Matrix4().makeTranslation(
+      -(box.min.x + box.max.x) / 2,
+      -box.min.y,
+      -(box.min.z + box.max.z) / 2,
+    )
+    const meshes: {
+      geo: THREE.BufferGeometry
+      matrix: THREE.Matrix4
+      color: string
+      vertexColors: boolean
+    }[] = []
+    scene.traverse((o) => {
+      const m = o as THREE.Mesh
+      if (!m.isMesh) return
+      const mat = m.material as THREE.MeshStandardMaterial
+      meshes.push({
+        geo: m.geometry as THREE.BufferGeometry,
+        matrix: new THREE.Matrix4().multiplyMatrices(rebase, m.matrixWorld),
+        color: mat?.color ? `#${mat.color.getHexString()}` : "#ffffff",
+        vertexColors: !!(m.geometry as THREE.BufferGeometry).attributes.color,
+      })
+    })
+    return {
+      meshes,
+      hx: (box.max.x - box.min.x) / 2,
+      hz: (box.max.z - box.min.z) / 2,
+    }
+  }, [scene])
+  return (
+    <group position={pos} quaternion={quat} scale={p.scale}>
+      {parts.meshes.map((it, i) => (
+        <mesh
+          key={i}
+          geometry={it.geo}
+          matrix={it.matrix}
+          matrixAutoUpdate={false}
+          castShadow
+          receiveShadow
+        >
+          <meshToonMaterial
+            color={it.color}
+            vertexColors={it.vertexColors}
+            gradientMap={toonGradient}
+          />
+          <Ink />
+        </mesh>
+      ))}
+      {/* Shallow foundation base: sites are graded level now (P49), so the
+          plinth is a visible 0.04 step with 0.56 buried — no more retaining
+          wall. Scale is divided back out so the step stays constant. */}
+      <mesh position={[0, 0.04 - 0.3, 0]} receiveShadow>
+        <boxGeometry args={[parts.hx * 2 + 0.6, 0.6, parts.hz * 2 + 0.6]} />
+        <meshToonMaterial color="#cfc4ae" gradientMap={toonGradient} />
+      </mesh>
+    </group>
+  )
+}
+
 function PropInstance({ p }: { p: PlacedProp }) {
   const pos = p.position.toArray() as [number, number, number]
   const quat = new THREE.Quaternion(p.quaternion.x, p.quaternion.y, p.quaternion.z, p.quaternion.w)
@@ -161,6 +243,13 @@ function PropInstance({ p }: { p: PlacedProp }) {
     case "civic-pad":
       // draped onto the ground it covers — see CivicPad
       return <CivicPad p={p} />
+    case "glb-building":
+      // its own Suspense: a still-loading model must not blank the world
+      return (
+        <Suspense fallback={null}>
+          <GlbBuilding p={p} />
+        </Suspense>
+      )
     case "stall":
       return (
         <group position={pos} quaternion={quat} scale={p.scale}>
