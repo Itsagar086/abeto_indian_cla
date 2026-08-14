@@ -1,6 +1,7 @@
 import * as THREE from "three"
 import { NPCS, WATER_LEVEL } from "./data"
-import { corridorSurface, groundOrDeck, propCollision } from "./props"
+import { METRO_LOOP } from "./terrain"
+import { civicPlotReport, corridorSurface, groundOrDeck, propCollision, spinAlong } from "./props"
 import { characterPose, emptyPose, type Pose } from "./character"
 
 /**
@@ -155,6 +156,89 @@ export function driftRadii(): number[] {
     out.push(radius)
   }
   _drift = out
+  return out
+}
+
+/* ---------------------------------------------------------------- routes */
+
+/** villagers who are heading somewhere specific rather than just pacing */
+const LANDMARK: Record<string, string> = {
+  // Priya is waiting for the bus home from SP Road
+  "coder-priya": "busstand",
+}
+
+export type NpcRoute = {
+  /** walk target in the villager's tangent frame, already inside the budget */
+  fwd: number
+  right: number
+  /** heading that faces the way they walk, and the one that faces the road */
+  walkYaw: number
+  waitYaw: number
+  /** how far the landmark actually is, Infinity when there is none */
+  landmarkDist: number
+}
+
+let _routes: NpcRoute[] | null = null
+
+export function npcRoutes(): NpcRoute[] {
+  if (_routes) return _routes
+  const out: NpcRoute[] = []
+  const budgets = driftRadii()
+  for (let i = 0; i < NPCS.length; i++) {
+    const dir = new THREE.Vector3(...NPCS[i].position).normalize()
+    const pos = dir.clone().multiplyScalar(groundOrDeck(dir))
+    const t1 = Math.abs(dir.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)
+    const right = new THREE.Vector3().crossVectors(t1, dir).normalize()
+    const fwd = new THREE.Vector3().crossVectors(dir, right).normalize()
+    const budget = budgets[i]
+
+    // nearest point of the arterial, for "face the road"
+    const { dirs, n } = METRO_LOOP
+    let bd = -2
+    const road = new THREE.Vector3()
+    for (let k = 0; k < n; k++) {
+      const d = dir.x * dirs[k * 3] + dir.y * dirs[k * 3 + 1] + dir.z * dirs[k * 3 + 2]
+      if (d > bd) {
+        bd = d
+        road.set(dirs[k * 3], dirs[k * 3 + 1], dirs[k * 3 + 2])
+      }
+    }
+    const toRoad = road.clone().addScaledVector(dir, -dir.dot(road))
+    const waitYaw =
+      toRoad.lengthSq() > 1e-9
+        ? spinAlong(dir, new THREE.Vector3().crossVectors(dir, toRoad.normalize()))
+        : 0
+
+    // walk direction: toward the landmark if there is one, else straight ahead
+    let f = budget
+    let r = 0
+    let landmarkDist = Infinity
+    const lm = LANDMARK[NPCS[i].id]
+    if (lm) {
+      const plot = civicPlotReport().find((p) => p.id === lm && p.ok)
+      if (plot) {
+        const pd = plot.dir.clone().normalize()
+        const target = pd.clone().multiplyScalar(groundOrDeck(pd))
+        landmarkDist = pos.distanceTo(target)
+        const to = target.clone().sub(pos)
+        to.addScaledVector(dir, -to.dot(dir))
+        if (to.lengthSq() > 1e-9) {
+          to.normalize()
+          // the budget is a hard cap: an anchor may not be walked to its
+          // landmark, only leaned toward it
+          f = to.dot(fwd) * budget
+          r = to.dot(right) * budget
+        }
+      }
+    }
+    const walkDir = fwd.clone().multiplyScalar(f).addScaledVector(right, r)
+    const walkYaw =
+      walkDir.lengthSq() > 1e-9
+        ? spinAlong(dir, new THREE.Vector3().crossVectors(dir, walkDir.normalize()))
+        : 0
+    out.push({ fwd: f, right: r, walkYaw, waitYaw, landmarkDist })
+  }
+  _routes = out
   return out
 }
 
@@ -344,34 +428,52 @@ export function npcMotion(
       break
     }
     case "COMMUTER": {
-      // out along a short fixed route, wait, check the watch, walk back
-      const r = drift
-      if (f < 0.3) {
+      // out along a short fixed route — toward the bus stand for those who
+      // have one — then wait facing the road, check the watch, and walk back
+      const route = npcRoutes()[index]
+      const len = Math.hypot(route.fwd, route.right)
+      if (f < 0.25) {
         out.state = "outbound"
-        const c = f / 0.3
-        out.fwd = c * r
-        out.yaw = 0
+        const c = f / 0.25
+        out.fwd = c * route.fwd
+        out.right = c * route.right
+        out.yaw = route.walkYaw
         _in.gait = 1
-        _in.phase = (c * r) / (4 * 0.38)
+        _in.phase = (c * len) / (4 * 0.38)
         characterPose(_in, pose)
-      } else if (f < 0.45) {
+      } else if (f < 0.62) {
+        // the long half of the cycle: standing at the stop, waiting
         out.state = "wait"
-        out.fwd = r
+        out.fwd = route.fwd
+        out.right = route.right
+        out.yaw = route.waitYaw
         characterPose(_in, pose)
-        const c = (f - 0.45 / 3) / 0.15
-        if (c > 0.35 && c < 0.75) {
-          // check the watch
+        const c = (f - 0.25) / 0.37
+        if (c > 0.3 && c < 0.5) {
+          // check the watch, again
           pose.shoulderL = -1.05
           pose.elbowL = 1.85
           pose.headPitch -= 0.45
+          pose.headYaw += 0.2
+        } else if (c > 0.62 && c < 0.8) {
+          // crane down the road for a bus that is not coming
+          pose.torsoTwist += 0.25
+          pose.headYaw += 0.55
+          pose.shoulderR = -0.25
+        } else {
+          pose.shoulderL = -0.1
+          pose.shoulderR = -0.1
+          pose.elbowL = 0.45
+          pose.elbowR = 0.4
         }
-      } else if (f < 0.75) {
+      } else if (f < 0.85) {
         out.state = "return"
-        const c = (f - 0.45) / 0.3
-        out.fwd = (1 - c) * r
-        out.yaw = Math.PI
+        const c = (f - 0.62) / 0.23
+        out.fwd = (1 - c) * route.fwd
+        out.right = (1 - c) * route.right
+        out.yaw = route.walkYaw + Math.PI
         _in.gait = 1
-        _in.phase = (c * r) / (4 * 0.38)
+        _in.phase = (c * len) / (4 * 0.38)
         characterPose(_in, pose)
       } else {
         out.state = "idle"

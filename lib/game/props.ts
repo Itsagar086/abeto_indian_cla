@@ -13,6 +13,7 @@ import {
   ROAD_MAX_FILL,
   loopProfileAt,
   loopWorldS,
+  loopAngle,
   registerPlotGrading,
   PLOT_GRADE_RAMP,
 } from "./terrain"
@@ -933,7 +934,7 @@ function offsetDir(dir: THREE.Vector3, axis: THREE.Vector3, phi: number) {
  * surfaceQuaternion has stood it up along `dir` — used so guardrails run with
  * the road instead of across it.
  */
-function spinAlong(dir: THREE.Vector3, tangent: THREE.Vector3) {
+export function spinAlong(dir: THREE.Vector3, tangent: THREE.Vector3) {
   const q0 = new THREE.Quaternion().setFromUnitVectors(_UP_Y, dir)
   const xAxis = new THREE.Vector3(1, 0, 0).applyQuaternion(q0)
   const cross = new THREE.Vector3().crossVectors(xAxis, tangent)
@@ -3119,14 +3120,26 @@ export type CivicPlot = {
    * ("a 20u footprint"). The pad's disc radius is half this.
    */
   footprint: number
+  /**
+   * What this plot needs to be NEAR, not just what it needs to avoid. The
+   * ring search only ever optimised "flat, clear, safe", which put the bus
+   * stand on a hilltop with no road in sight. "required" scores every
+   * candidate and takes the best frontage; "prefer" breaks ties toward the
+   * road but still accepts an inland site.
+   */
+  roadside?: "required" | "prefer"
 }
+
+/** where a roadside plot's EDGE should sit relative to the shoulder edge */
+const FRONTAGE_MIN = 1
+const FRONTAGE_MAX = 3
 
 /**
  * Reserved ground for buildings that do not exist yet. Each entry is a plot the
  * zoning plan has claimed; the pad rendered on it is a marker, not a structure.
  */
 export const CIVIC_PLOTS: CivicPlot[] = [
-  { id: "hospital", district: "civic", anchorZone: "haveli", dir: [-0.478, -0.018, 0.878], footprint: 14 },
+  { id: "hospital", district: "civic", anchorZone: "haveli", dir: [-0.478, -0.018, 0.878], footprint: 14, roadside: "prefer" },
   { id: "college", district: "tech", anchorZone: "samadhi", dir: [0.824, -0.524, 0.218], footprint: 20 },
   { id: "itpark", district: "tech", anchorZone: "samadhi", dir: [0.9201, -0.3883, 0.051], footprint: 20 },
   { id: "apartments", district: "industrial", anchorZone: "mill", dir: [0.173, 0.512, -0.841], footprint: 20 },
@@ -3134,8 +3147,8 @@ export const CIVIC_PLOTS: CivicPlot[] = [
   // (P45b, failed by 0.28u); 19u is the largest size that sites with the
   // required 0.3u+ of true shoulder clearance. Anchor unmoved.
   { id: "park", district: "green", anchorZone: "grove", dir: [-0.663, -0.747, -0.049], footprint: 19 },
-  { id: "busstand", district: "transit", anchorZone: "bazaar", dir: [0.8613, 0.2795, -0.4244], footprint: 14 },
-  { id: "cycleshop", district: "service", anchorZone: "workshop", dir: [-0.8402, -0.5365, 0.0787], footprint: 10 },
+  { id: "busstand", district: "transit", anchorZone: "bazaar", dir: [0.8613, 0.2795, -0.4244], footprint: 14, roadside: "required" },
+  { id: "cycleshop", district: "service", anchorZone: "workshop", dir: [-0.8402, -0.5365, 0.0787], footprint: 10, roadside: "prefer" },
 ]
 
 /** clearances a reserved plot must keep, beyond its own radius */
@@ -3260,11 +3273,20 @@ function siteCivicPlot(
   radius: number,
   placed: PlacedProp[],
   pads: { dir: THREE.Vector3; radius: number }[],
+  roadside?: "required" | "prefer",
 ) {
   const t1 = (Math.abs(want.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0))
     .clone().cross(want).normalize()
   const t2 = new THREE.Vector3().crossVectors(want, t1).normalize()
   const base = terrainRadius(want)
+  type Site = ReturnType<typeof plotClearances> extends never ? never : {
+    dir: THREE.Vector3
+    relief: ReturnType<typeof plotRelief>
+    clear: ReturnType<typeof plotClearances>
+    shift: number
+  }
+  let best: Site | null = null
+  let bestScore = Infinity
 
   for (let ring = 0; ring <= PLOT_RINGS; ring++) {
     const out = ring * PLOT_RING
@@ -3283,10 +3305,31 @@ function siteCivicPlot(
       if (slopeAt(cand, relief.r) > PLOT_SLOPE) continue
       const c = plotClearances(cand, radius, placed, pads)
       if (c.corridor < 0 || c.pillar < 0 || c.building < 0 || c.npc < 0 || c.plot < 0) continue
-      return { dir: cand, relief, clear: c, shift: want.angleTo(cand) * relief.r }
+      const site = { dir: cand, relief, clear: c, shift: want.angleTo(cand) * relief.r }
+      if (!roadside) return site
+
+      // How far this pad's EDGE would sit from the shoulder edge. Measured on
+      // the metro loop, which is what the corridor is actually drawn from —
+      // arterialDistance follows the painted arcs and disagrees by up to 0.5u.
+      const frontage = loopAngle(cand) * relief.r - radius - SKIRT_OUT
+      const miss =
+        frontage < FRONTAGE_MIN
+          ? FRONTAGE_MIN - frontage
+          : frontage > FRONTAGE_MAX
+            ? frontage - FRONTAGE_MAX
+            : 0
+      // frontage dominates; the walk from the intended centre only breaks ties
+      const score = miss * 10 + site.shift * (roadside === "required" ? 0.05 : 1)
+      if (score < bestScore) {
+        bestScore = score
+        best = site
+      }
+      // a site inside the target band cannot be beaten on frontage; take it
+      if (miss === 0 && roadside === "prefer") return site
+      if (miss === 0 && ring > 2) return best
     }
   }
-  return null
+  return best
 }
 
 let _plotSiting: PlotSiting[] = []
@@ -3306,7 +3349,7 @@ function placeCivicPads(props: PlacedProp[]) {
   for (const plot of CIVIC_PLOTS) {
     const radius = plot.footprint / 2
     const want = new THREE.Vector3(...plot.dir).normalize()
-    const sited = siteCivicPlot(want, radius, props, pads)
+    const sited = siteCivicPlot(want, radius, props, pads, plot.roadside)
     if (!sited) {
       report.push({
         id: plot.id, district: plot.district, anchorZone: plot.anchorZone,

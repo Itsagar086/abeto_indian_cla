@@ -125,7 +125,8 @@ export function Player() {
   const carryBlend = useRef(0)
   const pose = useRef(emptyPose())
   const poseInput = useRef({
-    gait: 0, phase: 0, time: 0, air: 0, rising: 0, carry: 0, groundL: 0, groundR: 0,
+    gait: 0, phase: 0, time: 0, air: 0, rising: 0, carry: 0,
+    groundL: 0, groundR: 0, slopeL: 0, slopeR: 0,
   })
 
   const position = useRef(new THREE.Vector3(...INITIAL_CHARACTER.position))
@@ -316,7 +317,11 @@ export function Player() {
         .addScaledVector(fwd, ahead)
         .normalize()
       const g = groundOrDeck(_footProbe) - rootG
-      return Math.max(-0.25, Math.min(0.25, g))
+      // Asymmetric on purpose. Lifting a foot toward the hip costs no reach,
+      // so the uphill limit is generous (a tight one clipped the leading foot
+      // 0.24u into steep rising ground); reaching DOWN costs pelvis drop, so
+      // that side stays modest.
+      return Math.max(-0.35, Math.min(0.55, g))
     }
     const poseIn = poseInput.current
     poseIn.gait = gait.current
@@ -327,8 +332,21 @@ export function Player() {
     poseIn.carry = carryBlend.current
     // the foot's forward offset is known from the phase alone, so the ground
     // is sampled exactly under where the foot lands — no one-frame lag
-    poseIn.groundL = footGround(-BODY.hipX, footPlanZ(stepPhase.current, gait.current, "L"))
-    poseIn.groundR = footGround(BODY.hipX, footPlanZ(stepPhase.current, gait.current, "R"))
+    const planL = footPlanZ(stepPhase.current, gait.current, "L")
+    const planR = footPlanZ(stepPhase.current, gait.current, "R")
+    poseIn.groundL = footGround(-BODY.hipX, planL)
+    poseIn.groundR = footGround(BODY.hipX, planR)
+    // ground pitch across the length of each shoe, so the ankle can lay the
+    // sole flat on the slope instead of burying its toe or heel in it
+    const HALF = BODY.footLen / 2
+    poseIn.slopeL = Math.atan2(
+      footGround(-BODY.hipX, planL + HALF) - footGround(-BODY.hipX, planL - HALF),
+      BODY.footLen,
+    )
+    poseIn.slopeR = Math.atan2(
+      footGround(BODY.hipX, planR + HALF) - footGround(BODY.hipX, planR - HALF),
+      BODY.footLen,
+    )
     characterPose(poseIn, pose.current)
 
     // camera: trail behind the player along -forward, offset up

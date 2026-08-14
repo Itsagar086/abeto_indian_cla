@@ -27,23 +27,23 @@ function Ink() {
  * villagers cost the same handful of draw calls as one.
  */
 const GEO = {
-  pelvis: new THREE.BoxGeometry(B.pelvisW, B.pelvisH + 0.06, 0.2),
-  torso: new THREE.BoxGeometry(B.torsoW, B.torsoH, B.torsoD),
-  sash: new THREE.BoxGeometry(0.08, 0.58, 0.03),
+  pelvis: new THREE.BoxGeometry(B.pelvisW, B.pelvisH + 0.08, B.torsoD - 0.01),
+  torso: new THREE.BoxGeometry(B.torsoW + 0.03, B.torsoH, B.torsoD + 0.02),
+  sash: new THREE.BoxGeometry(0.06, 0.5, 0.025),
   head: new THREE.SphereGeometry(B.headR, 8, 6),
-  hair: new THREE.SphereGeometry(B.headR + 0.012, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.55),
-  hat: new THREE.BoxGeometry(0.34, 0.12, 0.34),
-  upperArm: new THREE.BoxGeometry(0.13, B.upperArm, 0.13),
-  foreArm: new THREE.BoxGeometry(0.11, B.foreArm, 0.11),
-  hand: new THREE.BoxGeometry(0.11, 0.11, 0.11),
-  thigh: new THREE.BoxGeometry(0.16, B.thigh, 0.16),
-  shin: new THREE.BoxGeometry(0.14, B.shin, 0.14),
-  shoe: new THREE.BoxGeometry(B.footW + 0.03, 0.13, B.footLen),
+  hair: new THREE.SphereGeometry(B.headR + 0.012, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.58),
+  hat: new THREE.BoxGeometry(0.26, 0.09, 0.26),
+  upperArm: new THREE.BoxGeometry(0.1, B.upperArm, 0.1),
+  foreArm: new THREE.BoxGeometry(0.085, B.foreArm, 0.085),
+  hand: new THREE.BoxGeometry(0.085, 0.09, 0.075),
+  thigh: new THREE.BoxGeometry(0.115, B.thigh, 0.115),
+  shin: new THREE.BoxGeometry(0.095, B.shin, 0.095),
+  shoe: new THREE.BoxGeometry(B.footW + 0.03, 0.105, B.footLen),
 }
 /** rough size of each part, so one outline factor gives a constant ink width */
 const PART_SIZE: Record<keyof typeof GEO, number> = {
-  pelvis: 0.3, torso: 0.42, sash: 0.58, head: 0.38, hair: 0.4, hat: 0.34,
-  upperArm: 0.27, foreArm: 0.25, hand: 0.11, thigh: 0.37, shin: 0.35, shoe: 0.26,
+  pelvis: 0.26, torso: 0.35, sash: 0.5, head: 0.26, hair: 0.28, hat: 0.26,
+  upperArm: 0.32, foreArm: 0.26, hand: 0.09, thigh: 0.45, shin: 0.45, shoe: 0.24,
 }
 type PartKey = keyof typeof GEO
 const PARTS = Object.keys(GEO) as PartKey[]
@@ -77,6 +77,7 @@ type Rig = {
   fore: THREE.Object3D[]
   thigh: THREE.Object3D[]
   shin: THREE.Object3D[]
+  ankle: THREE.Object3D[]
   /** the nodes whose world matrices become instance matrices */
   nodes: Record<PartKey, THREE.Object3D[]>
 }
@@ -96,12 +97,12 @@ function makeRig(hat: number): Rig {
   torso.add(head)
 
   const nodes = {
-    pelvis: [o(0, B.pelvisH / 2, 0)],
-    torso: [o(0, B.torsoH / 2, 0)],
-    sash: [o(0, 0.26, 0.02)],
+    pelvis: [o(0, B.pelvisH / 2 - 0.02, 0)],
+    torso: [o(0, B.torsoH / 2 - 0.02, 0)],
+    sash: [o(0, 0.22, 0.02)],
     head: [o(0, B.headY - B.neckY, 0)],
-    hair: [o(0, B.headY - B.neckY + 0.02, -0.03)],
-    hat: [o(0, B.headY - B.neckY + 0.17, hat === 2 ? -0.02 : 0)],
+    hair: [o(0, B.headY - B.neckY + 0.012, -0.008)],
+    hat: [o(0, B.headY - B.neckY + 0.115, hat === 2 ? -0.015 : 0)],
     upperArm: [] as THREE.Object3D[],
     foreArm: [] as THREE.Object3D[],
     hand: [] as THREE.Object3D[],
@@ -110,7 +111,7 @@ function makeRig(hat: number): Rig {
     shoe: [] as THREE.Object3D[],
   } as Record<PartKey, THREE.Object3D[]>
 
-  nodes.sash[0].rotation.z = 0.62
+  nodes.sash[0].rotation.z = 0.6
   // headwear: a flat cap, a wrapped scarf (wider, lower) or a tall cap
   const hatScale = hat === 1 ? [1, 0.7, 1] : hat === 2 ? [1.12, 0.85, 1.12] : [0.86, 1.5, 0.86]
   nodes.hat[0].scale.set(hatScale[0], hatScale[1], hatScale[2])
@@ -123,6 +124,7 @@ function makeRig(hat: number): Rig {
   const fore: THREE.Object3D[] = []
   const thigh: THREE.Object3D[] = []
   const shin: THREE.Object3D[] = []
+  const ankle: THREE.Object3D[] = []
   for (const sx of [-1, 1]) {
     const a = o(sx * B.shoulderX, B.shoulderY - B.torsoY0, 0)
     const f = o(0, -B.upperArm, 0)
@@ -130,7 +132,7 @@ function makeRig(hat: number): Rig {
     a.add(f)
     const mu = o(0, -B.upperArm / 2, 0)
     const mf = o(0, -B.foreArm / 2, 0)
-    const mh = o(0, -B.foreArm - 0.04, 0)
+    const mh = o(0, -B.foreArm - 0.035, 0)
     a.add(mu)
     f.add(mf, mh)
     arm.push(a)
@@ -145,16 +147,19 @@ function makeRig(hat: number): Rig {
     th.add(sh)
     const mt = o(0, -B.thigh / 2, 0)
     const ms = o(0, -B.shin / 2, 0)
-    const mo = o(0, -B.shin - 0.015, 0.05)
+    const ank = o(0, -B.shin, 0)
+    const mo = o(0, -0.012, 0.035)
     th.add(mt)
-    sh.add(ms, mo)
+    sh.add(ms, ank)
+    ank.add(mo)
+    ankle.push(ank)
     thigh.push(th)
     shin.push(sh)
     nodes.thigh.push(mt)
     nodes.shin.push(ms)
     nodes.shoe.push(mo)
   }
-  return { root, pelvis, torso, head, arm, fore, thigh, shin, nodes }
+  return { root, pelvis, torso, head, arm, fore, thigh, shin, ankle, nodes }
 }
 
 const _m = new THREE.Matrix4()
@@ -236,6 +241,8 @@ function Crowd() {
       rig.thigh[1].rotation.x = -p.hipR
       rig.shin[0].rotation.x = p.kneeL
       rig.shin[1].rotation.x = p.kneeR
+      rig.ankle[0].rotation.x = -p.ankleL
+      rig.ankle[1].rotation.x = -p.ankleR
       rig.root.updateMatrixWorld(true)
 
       for (const part of PARTS) {

@@ -17,29 +17,43 @@ import * as THREE from "three"
  * cannot drift.
  */
 
+/**
+ * Near-realistic proportions, ~7 heads tall, taken off real anthropometric
+ * fractions of stature rather than cartoon shorthand. The stylisation in this
+ * game comes from the RENDERING — heavy ink, flat unshaded colour, interior
+ * detail lines — not from inflating the head, which is why this replaced the
+ * old 1/5-head figure.
+ *
+ * Landmarks as fractions of the 1.8u height, and what they line up with:
+ *   ankle 0.075 (0.04H) · knee 0.50 (0.28H) · hip joint 0.93 (0.52H)
+ *   waist ~1.08 (0.60H) · shoulder 1.44 (0.80H) · chin ~1.54 · crown 1.80
+ * The elbow lands at the waist and the wrist at the crotch, which is the
+ * quickest check that an arm is the right length.
+ */
 export const BODY = {
   height: 1.8,
-  footH: 0.08,
-  footLen: 0.26,
-  footW: 0.14,
-  shin: 0.35,
-  thigh: 0.37,
+  footH: 0.075,
+  footLen: 0.24,
+  footW: 0.1,
+  shin: 0.45,
+  thigh: 0.45,
   /** hip pivot height with the leg in its neutral, slightly bent stance */
-  hipY: 0.76,
-  hipX: 0.11,
-  pelvisW: 0.3,
-  pelvisH: 0.1,
-  torsoY0: 0.86,
-  torsoH: 0.44,
-  torsoW: 0.42,
-  torsoD: 0.26,
-  shoulderY: 1.24,
-  shoulderX: 0.24,
-  upperArm: 0.27,
-  foreArm: 0.25,
-  neckY: 1.3,
-  headR: 0.19,
-  headY: 1.55,
+  hipY: 0.93,
+  hipX: 0.085,
+  pelvisW: 0.26,
+  pelvisH: 0.12,
+  torsoY0: 1.05,
+  torsoH: 0.45,
+  torsoW: 0.32,
+  torsoD: 0.19,
+  shoulderY: 1.44,
+  shoulderX: 0.175,
+  upperArm: 0.32,
+  foreArm: 0.26,
+  neckY: 1.5,
+  /** head is 0.26 across = 1/6.9 of the figure, i.e. the reference's ~1/7 */
+  headR: 0.13,
+  headY: 1.67,
 } as const
 
 /** neutral hip-to-ankle drop; the leg keeps a little bend here, never locked */
@@ -52,8 +66,8 @@ const LEG_MAX = (BODY.thigh + BODY.shin) * 0.999
  * because this game moves the player 9.2u/s: a short stride would cycle the
  * legs at ~24 steps/s. See the note in characterPose about the residual.
  */
-export const STRIDE_WALK = 0.38
-export const STRIDE_RUN = 0.46
+export const STRIDE_WALK = 0.42
+export const STRIDE_RUN = 0.52
 /** how high the swinging foot lifts */
 const SWING_LIFT = 0.13
 
@@ -66,6 +80,9 @@ export type Pose = {
   shoulderR: number
   elbowL: number
   elbowR: number
+  /** ankle pitch, so the sole lies ON the ground instead of following the shin */
+  ankleL: number
+  ankleR: number
   torsoTwist: number
   torsoLean: number
   torsoRoll: number
@@ -79,6 +96,7 @@ export function emptyPose(): Pose {
   return {
     hipL: 0, hipR: 0, kneeL: 0, kneeR: 0,
     shoulderL: 0, shoulderR: 0, elbowL: 0, elbowR: 0,
+    ankleL: 0, ankleR: 0,
     torsoTwist: 0, torsoLean: 0, torsoRoll: 0,
     headPitch: 0, headYaw: 0, bob: 0,
   }
@@ -160,6 +178,9 @@ export type PoseInput = {
   /** ground height under each foot, relative to the root (metres, + = higher) */
   groundL?: number
   groundR?: number
+  /** ground pitch under each foot, radians, positive = rising ahead */
+  slopeL?: number
+  slopeR?: number
 }
 
 /**
@@ -212,6 +233,20 @@ export function characterPose(inp: PoseInput, out: Pose = emptyPose()): Pose {
   out.kneeL = legL.knee
   out.hipR = legR.hip
   out.kneeR = legR.knee
+  // Ankles. The shin ends at (hip − knee) from vertical, and the shoe rides
+  // that frame, so a rigid foot sits ~18° off the ground even on the flat and
+  // buries a corner. Cancel the shin's pitch and add the ground's, and the
+  // sole lies on the slope. While the foot is swinging, ease back to neutral.
+  const ankle = (hip: number, knee: number, slope: number, lift: number) => {
+    // the renderer applies rotation.x = -ankle, and the shin already carries
+    // (-hip + knee); cancelling that and adding the ground pitch means
+    // ankle = knee - hip + slope
+    const flat = knee - hip + slope
+    const air = Math.min(1, lift / SWING_LIFT)
+    return Math.max(-0.7, Math.min(0.7, flat * (1 - air) + (knee - hip) * 0.35 * air))
+  }
+  out.ankleL = ankle(legL.hip, legL.knee, inp.slopeL ?? 0, fL.lift * walkW)
+  out.ankleR = ankle(legR.hip, legR.knee, inp.slopeR ?? 0, fR.lift * walkW)
 
   // ---- arms swing opposite the legs
   const swing = Math.sin(inp.phase * Math.PI * 2)

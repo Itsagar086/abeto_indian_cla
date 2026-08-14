@@ -137,10 +137,10 @@ export const NPCS: Npc[] = [
     hair: "#20242e",
     position: [48.02, 29.78, -7.54],
     texts: [
-      "Hey! You're the delivery rider, right?",
-      "Have you heard of three.js?",
-      "It's a way to build whole little worlds like this one, in a browser.",
-      "Basically art, except the paint is code.",
+      "Twenty minutes. The board has said 'arriving' for twenty minutes.",
+      "I shipped two builds today. The bus has shipped nothing.",
+      "You're the courier, no? At least somebody in this city arrives.",
+      "It's fine. I'll stand here. It's always fine, and it's always late.",
     ],
   },
   {
