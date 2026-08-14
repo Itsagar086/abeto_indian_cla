@@ -51,6 +51,11 @@ export type PropKind =
   | "glb-building"
   | "cow"
   | "cat"
+  | "stall-counter"
+  | "flower-spread"
+  | "work-crate"
+  | "sit-step"
+  | "shrine"
 
 export type PlacedProp = {
   kind: PropKind
@@ -125,6 +130,11 @@ const KIND_COLORS: Partial<Record<PropKind, [string, string]>> = {
   "civic-pad": ["#cfc4ae", "#a4998a"],
   cow: ["#e6e0d3", "#4a443c"],
   cat: ["#7a6f62", "#2f2a25"],
+  "stall-counter": ["#a8865c", "#6d5636"],
+  "flower-spread": ["#c9bfa4", "#e8a020"],
+  "work-crate": ["#8a7250", "#5a4a34"],
+  "sit-step": ["#bdb5a4", "#928a7c"],
+  shrine: ["#d8cdb4", "#c0392b"],
 }
 
 /* ------------------------------------------------------------- namma metro */
@@ -1799,8 +1809,74 @@ export function buildProps(): PlacedProp[] {
   // after the pads: buildings stand on the SITED pad centres
   placeGlbBuildings(props)
   placeStreetAnimals(props)
+  placeWorkstations(props)
 
   return props
+}
+
+/* ------------------------------------------------------------ workstations */
+
+/**
+ * The objects each villager's job actually requires, placed AROUND their
+ * spawn — never by moving them, since every NPC position is a weight-1
+ * terrain anchor (WORLD_DESIGN rule 4). Offsets are in the villager's own
+ * tangent frame and chosen so the hands of the existing animation land on the
+ * work surface; the harness measures that gap rather than trusting it.
+ *
+ * `fwd` is how far in front of the villager the piece sits, `lift` lets a
+ * seat sit under them rather than ahead of them.
+ */
+type Workstation = { kind: PropKind; fwd: number; right?: number; spin?: number }
+
+export const WORKSTATIONS: Record<string, Workstation> = {
+  // vendors work over a counter in front of them
+  "chai-wala": { kind: "stall-counter", fwd: 0.66 },
+  amma: { kind: "stall-counter", fwd: 0.66 },
+  // Radha sits behind a low flower spread rather than a raised counter
+  "flower-radha": { kind: "flower-spread", fwd: 0.6 },
+  // tradesmen crouch over a crate
+  "mechanic-gopal": { kind: "work-crate", fwd: 0.52 },
+  "mill-worker-a": { kind: "work-crate", fwd: 0.52 },
+  "mill-worker-b": { kind: "work-crate", fwd: 0.52 },
+  "mill-worker-c": { kind: "work-crate", fwd: 0.52 },
+  "engineer-iyer": { kind: "work-crate", fwd: 0.52 },
+  "boatman-deva": { kind: "work-crate", fwd: 0.52 },
+  // idlers need something to sit ON, directly beneath them
+  "boss-verma-senior": { kind: "sit-step", fwd: 0.06 },
+  "kid-chintu": { kind: "sit-step", fwd: 0.06 },
+  "sadhu-wanderer": { kind: "sit-step", fwd: 0.06 },
+  "musician-iqbal": { kind: "sit-step", fwd: 0.06 },
+  // the priest bows to a shrine
+  "priest-baba": { kind: "shrine", fwd: 0.95 },
+}
+
+function placeWorkstations(props: PlacedProp[]) {
+  let seed = 9400
+  for (const npc of NPCS) {
+    const w = WORKSTATIONS[npc.id]
+    if (!w) continue
+    const dir = new THREE.Vector3(...npc.position).normalize()
+    const t1 = Math.abs(dir.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)
+    const right = new THREE.Vector3().crossVectors(t1, dir).normalize()
+    const fwd = new THREE.Vector3().crossVectors(dir, right).normalize()
+    const r = terrainRadius(dir)
+    const at = dir
+      .clone()
+      .addScaledVector(fwd, w.fwd / r)
+      .addScaledVector(right, (w.right ?? 0) / r)
+      .normalize()
+    const [colorA, colorB] = KIND_COLORS[w.kind] ?? ["#cccccc", "#999999"]
+    props.push({
+      kind: w.kind,
+      position: at.clone().multiplyScalar(terrainRadius(at)),
+      // face the villager: local +Z points back at them
+      quaternion: surfaceQuaternion(at, spinAlong(at, new THREE.Vector3().crossVectors(at, fwd)) + (w.spin ?? 0)),
+      scale: 1,
+      colorA,
+      colorB,
+      seed: seed++,
+    })
+  }
 }
 
 /**

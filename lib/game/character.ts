@@ -107,17 +107,62 @@ export function emptyPose(): Pose {
  * of and `dy` below the hip. This is what keeps the foot ON the ground rather
  * than near it — the caller passes the real ground height under that foot.
  */
-export function legIK(dz: number, dy: number) {
+export function twoLink(l1: number, l2: number, dz: number, dy: number) {
+  const max = (l1 + l2) * 0.999
   let d = Math.hypot(dz, dy)
-  if (d > LEG_MAX) d = LEG_MAX
+  if (d > max) d = max
   if (d < 1e-4) d = 1e-4
-  const { thigh, shin } = BODY
   const theta = Math.atan2(dz, dy)
-  const cosA = (thigh * thigh + d * d - shin * shin) / (2 * thigh * d)
+  const cosA = (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d)
   const a = Math.acos(Math.max(-1, Math.min(1, cosA)))
-  const cosK = (thigh * thigh + shin * shin - d * d) / (2 * thigh * shin)
+  const cosK = (l1 * l1 + l2 * l2 - d * d) / (2 * l1 * l2)
   const interior = Math.acos(Math.max(-1, Math.min(1, cosK)))
-  return { hip: theta + a, knee: Math.PI - interior }
+  return { root: theta + a, joint: Math.PI - interior }
+}
+
+export function legIK(dz: number, dy: number) {
+  const s = twoLink(BODY.thigh, BODY.shin, dz, dy)
+  return { hip: s.root, knee: s.joint }
+}
+
+/** hand length past the wrist, so an arm target lands at the palm */
+const HAND_OUT = 0.035
+
+/**
+ * Where must shoulder and elbow sit for the HAND to land `dz` forward of and
+ * `dy` below the shoulder. This is what lets a pose aim at an object — the
+ * vendor's counter, the tradesman's crate — instead of guessing joint angles
+ * and hoping the hand ends up near it.
+ */
+export function armIK(dz: number, dy: number) {
+  const s = twoLink(BODY.upperArm, BODY.foreArm + HAND_OUT, dz, dy)
+  return { shoulder: s.root, elbow: s.joint }
+}
+
+/**
+ * Aim one arm at a point given in the ROOT frame (z forward, y up from the
+ * feet), accounting for how far the torso has leaned. Returns the pair the
+ * pose wants; the caller assigns it to whichever side is working.
+ */
+export function reachFor(
+  targetZ: number,
+  targetY: number,
+  bob: number,
+  lean: number,
+  side: 1 | -1,
+) {
+  // torso origin, then into the torso's own (leaned) frame
+  const oy = BODY.hipY + bob + BODY.pelvisH
+  const vz = targetZ
+  const vy = targetY - oy
+  // the torso rotates by +lean, so world->torso is the inverse
+  const c = Math.cos(lean)
+  const sn = Math.sin(lean)
+  const ty = vy * c + vz * sn
+  const tz = -vy * sn + vz * c
+  // shoulder position within the torso frame
+  const sy = BODY.shoulderY - BODY.torsoY0
+  return armIK(tz, sy - ty)
 }
 
 /**
@@ -264,7 +309,9 @@ export function characterPose(inp: PoseInput, out: Pose = emptyPose()): Pose {
   out.torsoRoll = Math.cos(inp.phase * Math.PI * 2) * 0.05 * walkW
 
   // ---- head stays level: it counters the torso rather than riding it
-  out.headPitch = -out.torsoLean * 0.8
+  // head counters the torso so it stays level (torso is +forward, head
+  // rotation.x is -headPitch, so countering means matching sign here)
+  out.headPitch = out.torsoLean * 0.8
   out.headYaw = -out.torsoTwist * 0.6 + Math.sin(t * 0.5) * 0.05 * (1 - walkW)
 
   // ---- jump: tuck going up, reach for the ground coming down

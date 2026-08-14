@@ -1,4 +1,4 @@
-"use client"
+﻿"use client"
 
 import { useMemo, useRef } from "react"
 import * as THREE from "three"
@@ -11,6 +11,8 @@ import { useGameStore, useNpcHasQuest } from "@/lib/game/store"
 import { toonGradient } from "@/lib/game/toon"
 import { BODY, emptyPose } from "@/lib/game/character"
 import { ARCHETYPE, animalMotion, driftRadii, npcLook, npcMotion } from "@/lib/game/npc"
+import type { NpcLook } from "@/lib/game/looks"
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js"
 
 const INK = "#2c2620"
 const B = BODY
@@ -21,42 +23,116 @@ function Ink() {
 
 /* ------------------------------------------------------------ shared cost */
 
+const M4 = (x: number, y: number, z: number) => new THREE.Matrix4().makeTranslation(x, y, z)
+const at = (g: THREE.BufferGeometry, x: number, y: number, z: number) => g.applyMatrix4(M4(x, y, z))
+const box = (w: number, h: number, d: number) => new THREE.BoxGeometry(w, h, d)
+
 /**
- * ONE geometry per limb type for the whole roster — not one per villager.
- * Every human NPC is drawn from these through instanced meshes, so twenty
- * villagers cost the same handful of draw calls as one.
+ * ONE geometry per garment type for the whole roster — not one per villager.
+ *
+ * The interior detail lines (collar, hem, belt, cuffs) are MERGED into their
+ * parent garment rather than instanced separately: they never move relative to
+ * it, so merging costs nothing and keeps the crowd at a handful of draw calls
+ * instead of one set per line. Optional pieces — skirt, vest, hat, glasses,
+ * beard, moustache, caste mark — are their own instanced sets, switched on
+ * per villager by scaling the unused ones away, because those are exactly what
+ * makes a character recognisable and they must not be dropped.
  */
 const GEO = {
-  pelvis: new THREE.BoxGeometry(B.pelvisW, B.pelvisH + 0.08, B.torsoD - 0.01),
-  torso: new THREE.BoxGeometry(B.torsoW + 0.03, B.torsoH, B.torsoD + 0.02),
-  sash: new THREE.BoxGeometry(0.06, 0.5, 0.025),
+  // pelvis + belt line
+  pelvis: mergeGeometries([
+    at(box(B.pelvisW, B.pelvisH + 0.08, B.torsoD - 0.01), 0, 0, 0),
+    at(box(B.pelvisW + 0.01, 0.022, B.torsoD + 0.005), 0, B.pelvisH / 2 + 0.02, 0),
+  ])!,
+  // torso + collar + hem
+  torso: mergeGeometries([
+    at(box(B.torsoW + 0.04, B.torsoH, B.torsoD + 0.02), 0, 0, 0),
+    at(box(B.torsoW - 0.06, 0.018, B.torsoD + 0.04), 0, B.torsoH / 2 - 0.005, 0),
+    at(box(B.torsoW + 0.05, 0.02, B.torsoD + 0.04), 0, -B.torsoH / 2 + 0.02, 0),
+  ])!,
+  /** sari / dhoti / lungi / robe — a unit column, scaled per villager */
+  skirt: new THREE.CylinderGeometry(0.15, 0.23, 1, 8, 1, true),
+  /** waistcoat, apron, overall bib, safari jacket — an overlay on the torso */
+  vest: box(B.torsoW + 0.06, B.torsoH * 0.78, B.torsoD + 0.05),
+  /** shoulder cloth, sacred thread or bag strap */
+  sash: box(0.06, 0.5, 0.025),
   head: new THREE.SphereGeometry(B.headR, 8, 6),
   hair: new THREE.SphereGeometry(B.headR + 0.012, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.58),
-  hat: new THREE.BoxGeometry(0.26, 0.09, 0.26),
-  upperArm: new THREE.BoxGeometry(0.1, B.upperArm, 0.1),
-  foreArm: new THREE.BoxGeometry(0.085, B.foreArm, 0.085),
-  hand: new THREE.BoxGeometry(0.085, 0.09, 0.075),
-  thigh: new THREE.BoxGeometry(0.115, B.thigh, 0.115),
-  shin: new THREE.BoxGeometry(0.095, B.shin, 0.095),
-  shoe: new THREE.BoxGeometry(B.footW + 0.03, 0.105, B.footLen),
-}
-/** rough size of each part, so one outline factor gives a constant ink width */
-const PART_SIZE: Record<keyof typeof GEO, number> = {
-  pelvis: 0.26, torso: 0.35, sash: 0.5, head: 0.26, hair: 0.28, hat: 0.26,
-  upperArm: 0.32, foreArm: 0.26, hand: 0.09, thigh: 0.45, shin: 0.45, shoe: 0.24,
+  hat: box(0.26, 0.09, 0.26),
+  // both eyes and the brow bar in one geometry: they are rigid to the skull
+  face: mergeGeometries([
+    at(box(0.03, 0.024, 0.01), -0.05, 0, B.headR * 0.93),
+    at(box(0.03, 0.024, 0.01), 0.05, 0, B.headR * 0.93),
+    at(box(0.14, 0.013, 0.01), 0, 0.042, B.headR * 0.9),
+  ])!,
+  // two lenses and a bridge
+  glasses: mergeGeometries([
+    at(box(0.055, 0.042, 0.012), -0.052, 0, B.headR * 0.95),
+    at(box(0.055, 0.042, 0.012), 0.052, 0, B.headR * 0.95),
+    at(box(0.05, 0.01, 0.012), 0, 0, B.headR * 0.95),
+  ])!,
+  beard: box(0.15, 0.13, 0.1),
+  moustache: box(0.075, 0.02, 0.03),
+  /** bindi or tilak */
+  mark: box(0.022, 0.05, 0.012),
+  sleeve: box(0.118, 0.14, 0.118),
+  upperArm: box(0.095, B.upperArm, 0.095),
+  foreArm: box(0.082, B.foreArm, 0.082),
+  hand: box(0.085, 0.09, 0.075),
+  // thigh + cargo/dhoti cuff line
+  thigh: box(0.115, B.thigh, 0.115),
+  shin: mergeGeometries([
+    at(box(0.095, B.shin, 0.095), 0, 0, 0),
+    at(box(0.105, 0.016, 0.105), 0, -B.shin / 2 + 0.055, 0),
+  ])!,
+  // shoe + sole seam
+  shoe: mergeGeometries([
+    at(box(B.footW + 0.03, 0.105, B.footLen), 0, 0, 0),
+    at(box(B.footW + 0.042, 0.034, B.footLen + 0.015), 0, -0.05, 0),
+  ])!,
 }
 type PartKey = keyof typeof GEO
 const PARTS = Object.keys(GEO) as PartKey[]
+
+/** rough size of each part, so one outline factor gives a constant ink width */
+const PART_SIZE: Record<PartKey, number> = {
+  pelvis: 0.26, torso: 0.35, skirt: 0.5, vest: 0.36, sash: 0.5, head: 0.26,
+  hair: 0.28, hat: 0.26, face: 0.14, glasses: 0.16, beard: 0.15, moustache: 0.08,
+  mark: 0.05, sleeve: 0.14, upperArm: 0.32, foreArm: 0.26, hand: 0.09,
+  thigh: 0.45, shin: 0.45, shoe: 0.24,
+}
 /** how many of each part a single villager owns */
 const PART_COUNT: Record<PartKey, number> = {
-  pelvis: 1, torso: 1, sash: 1, head: 1, hair: 1, hat: 1,
-  upperArm: 2, foreArm: 2, hand: 2, thigh: 2, shin: 2, shoe: 2,
+  pelvis: 1, torso: 1, skirt: 1, vest: 1, sash: 1, head: 1, hair: 1, hat: 1,
+  face: 1, glasses: 1, beard: 1, moustache: 1, mark: 1,
+  sleeve: 2, upperArm: 2, foreArm: 2, hand: 2, thigh: 2, shin: 2, shoe: 2,
 }
-/** which look colour each part takes */
-const PART_COLOR: Record<PartKey, "skin" | "hair" | "shirt" | "pants" | "shoe" | "accent"> = {
-  pelvis: "pants", torso: "shirt", sash: "accent", head: "skin", hair: "hair",
-  hat: "accent", upperArm: "shirt", foreArm: "skin", hand: "skin",
-  thigh: "pants", shin: "pants", shoe: "shoe",
+/** only the silhouette carries ink; detail slabs would just muddy it */
+const INKED = new Set<PartKey>([
+  "pelvis", "torso", "skirt", "vest", "head", "hair", "hat",
+  "sleeve", "upperArm", "foreArm", "hand", "thigh", "shin", "shoe",
+])
+/** which authored colour each part takes */
+function partColor(part: PartKey, look: NpcLook): string {
+  switch (part) {
+    case "pelvis": return look.skirt > 0 ? look.skirtColor : look.pants
+    case "torso": return look.shirt
+    case "skirt": return look.skirtColor
+    case "vest": return look.vestColor || look.shirt
+    case "sash": return look.sashColor || look.shirt
+    case "head": case "foreArm": case "hand": case "upperArm": return look.skin
+    case "hair": return look.hair
+    case "hat": return look.hatColor || look.hair
+    case "face": return "#2b2622"
+    case "glasses": return "#2b2622"
+    case "beard": return look.hair
+    case "moustache": return look.hair
+    case "mark": return look.mark || "#000000"
+    case "sleeve": return look.shirt
+    case "thigh": case "shin": return look.pants
+    case "shoe": return look.shoe || look.skin
+    default: return look.shirt
+  }
 }
 
 /** villagers past this are drawn without ink; past FREEZE they stop animating */
@@ -82,7 +158,9 @@ type Rig = {
   nodes: Record<PartKey, THREE.Object3D[]>
 }
 
-function makeRig(hat: number): Rig {
+const HIDE = 0.0001
+
+function makeRig(look: NpcLook): Rig {
   const o = (x = 0, y = 0, z = 0) => {
     const n = new THREE.Object3D()
     n.position.set(x, y, z)
@@ -96,13 +174,22 @@ function makeRig(hat: number): Rig {
   pelvis.add(torso)
   torso.add(head)
 
+  const headTop = B.headY - B.neckY
   const nodes = {
     pelvis: [o(0, B.pelvisH / 2 - 0.02, 0)],
     torso: [o(0, B.torsoH / 2 - 0.02, 0)],
+    skirt: [o(0, 0, 0)],
+    vest: [o(0, B.torsoH * 0.42 - 0.02, 0)],
     sash: [o(0, 0.22, 0.02)],
-    head: [o(0, B.headY - B.neckY, 0)],
-    hair: [o(0, B.headY - B.neckY + 0.012, -0.008)],
-    hat: [o(0, B.headY - B.neckY + 0.115, hat === 2 ? -0.015 : 0)],
+    head: [o(0, headTop, 0)],
+    hair: [o(0, headTop + 0.012, -0.008)],
+    hat: [o(0, headTop + 0.115, 0)],
+    face: [o(0, headTop + 0.012, 0)],
+    glasses: [o(0, headTop + 0.012, 0)],
+    beard: [o(0, headTop - 0.085, 0.055)],
+    moustache: [o(0, headTop - 0.035, B.headR * 0.95)],
+    mark: [o(0, headTop + 0.075, B.headR * 0.93)],
+    sleeve: [] as THREE.Object3D[],
     upperArm: [] as THREE.Object3D[],
     foreArm: [] as THREE.Object3D[],
     hand: [] as THREE.Object3D[],
@@ -111,14 +198,61 @@ function makeRig(hat: number): Rig {
     shoe: [] as THREE.Object3D[],
   } as Record<PartKey, THREE.Object3D[]>
 
-  nodes.sash[0].rotation.z = 0.6
-  // headwear: a flat cap, a wrapped scarf (wider, lower) or a tall cap
-  const hatScale = hat === 1 ? [1, 0.7, 1] : hat === 2 ? [1.12, 0.85, 1.12] : [0.86, 1.5, 0.86]
-  nodes.hat[0].scale.set(hatScale[0], hatScale[1], hatScale[2])
-  if (hat === 0) nodes.hat[0].scale.setScalar(0.0001) // no hat: collapse it away
-  pelvis.add(nodes.pelvis[0])
-  torso.add(nodes.torso[0], nodes.sash[0])
-  head.add(nodes.head[0], nodes.hair[0], nodes.hat[0])
+  // ---- torso build, widened for a portly villager
+  nodes.torso[0].scale.set(look.build, 1, look.build)
+  nodes.pelvis[0].scale.set(look.build, 1, look.build)
+  // ---- the skirt: a column from the waist down to its authored hem
+  if (look.skirt > 0) {
+    const hem = look.skirt
+    const h = B.hipY + B.pelvisH * 0.4 - hem
+    nodes.skirt[0].position.y = B.pelvisH * 0.4 - h / 2
+    nodes.skirt[0].scale.set(look.build, h, look.build)
+  } else nodes.skirt[0].scale.setScalar(HIDE)
+  // ---- vest: waistcoat / apron / bib / safari jacket
+  if (look.vest > 0) {
+    const v = nodes.vest[0]
+    if (look.vest === 1) v.scale.set(look.build * 1.01, 1, 1.02) // waistcoat
+    else if (look.vest === 2) v.scale.set(look.build * 0.92, 1.05, 1.04) // apron
+    else if (look.vest === 3) v.scale.set(look.build * 1.04, 1.02, 1.05) // overshirt
+    else v.scale.set(look.build * 0.8, 1.1, 1.06) // overall bib
+  } else nodes.vest[0].scale.setScalar(HIDE)
+  if (look.sash === 0) nodes.sash[0].scale.setScalar(HIDE)
+  else {
+    nodes.sash[0].rotation.z = look.sash === 2 ? 0.72 : 0.6
+    if (look.sash === 2) nodes.sash[0].scale.set(0.45, 1, 1) // sacred thread
+  }
+  // ---- headwear: cloth cap, wrap, tall cap, hard hat, sun hat
+  const hatScale: Record<number, [number, number, number]> = {
+    1: [1, 0.75, 1],
+    2: [1.14, 1.05, 1.14],
+    3: [0.94, 1.7, 0.94],
+    4: [1.12, 1.0, 1.12],
+    5: [1.7, 0.5, 1.7],
+  }
+  if (look.hat > 0) {
+    const s = hatScale[look.hat]
+    nodes.hat[0].scale.set(s[0], s[1], s[2])
+    if (look.hat === 5) nodes.hat[0].position.y = headTop + 0.1
+  } else nodes.hat[0].scale.setScalar(HIDE)
+  // ---- face additions
+  if (!look.glasses) nodes.glasses[0].scale.setScalar(HIDE)
+  if (look.beard > 0) {
+    const b = nodes.beard[0]
+    if (look.beard === 1) b.scale.set(0.95, 0.55, 0.85) // stubble
+    else if (look.beard === 2) b.scale.set(1, 1, 1)
+    else b.scale.set(1.05, 1.75, 1) // long
+    b.position.y = headTop - 0.085 - (look.beard === 3 ? 0.06 : 0)
+  } else nodes.beard[0].scale.setScalar(HIDE)
+  if (!look.moustache) nodes.moustache[0].scale.setScalar(HIDE)
+  if (!look.mark) nodes.mark[0].scale.setScalar(HIDE)
+  else if (look.mark === "#e0742a") nodes.mark[0].scale.set(1, 1.7, 1) // tilak
+
+  pelvis.add(nodes.pelvis[0], nodes.skirt[0])
+  torso.add(nodes.torso[0], nodes.vest[0], nodes.sash[0])
+  head.add(
+    nodes.head[0], nodes.hair[0], nodes.hat[0], nodes.face[0],
+    nodes.glasses[0], nodes.beard[0], nodes.moustache[0], nodes.mark[0],
+  )
 
   const arm: THREE.Object3D[] = []
   const fore: THREE.Object3D[] = []
@@ -126,17 +260,20 @@ function makeRig(hat: number): Rig {
   const shin: THREE.Object3D[] = []
   const ankle: THREE.Object3D[] = []
   for (const sx of [-1, 1]) {
-    const a = o(sx * B.shoulderX, B.shoulderY - B.torsoY0, 0)
+    const a = o(sx * B.shoulderX * look.build, B.shoulderY - B.torsoY0, 0)
     const f = o(0, -B.upperArm, 0)
     torso.add(a)
     a.add(f)
+    const msl = o(0, -0.06, 0)
     const mu = o(0, -B.upperArm / 2, 0)
     const mf = o(0, -B.foreArm / 2, 0)
     const mh = o(0, -B.foreArm - 0.035, 0)
-    a.add(mu)
+    if (look.sleeve === 0) msl.scale.setScalar(HIDE)
+    a.add(msl, mu)
     f.add(mf, mh)
     arm.push(a)
     fore.push(f)
+    nodes.sleeve.push(msl)
     nodes.upperArm.push(mu)
     nodes.foreArm.push(mf)
     nodes.hand.push(mh)
@@ -149,6 +286,7 @@ function makeRig(hat: number): Rig {
     const ms = o(0, -B.shin / 2, 0)
     const ank = o(0, -B.shin, 0)
     const mo = o(0, -0.012, 0.035)
+    if (look.barefoot) mo.scale.setScalar(HIDE)
     th.add(mt)
     sh.add(ms, ank)
     ank.add(mo)
@@ -178,7 +316,7 @@ const _tmp = new THREE.Vector3()
  * whatever they last held, which nobody can see.
  */
 function Crowd() {
-  const rigs = useMemo(() => HUMANS.map(({ i }) => makeRig(npcLook(i).hat)), [])
+  const rigs = useMemo(() => HUMANS.map(({ i }) => makeRig(npcLook(i))), [])
   const bases = useMemo(
     () =>
       HUMANS.map(({ n }) => {
@@ -231,7 +369,7 @@ function Crowd() {
 
       rig.pelvis.position.y = B.hipY + p.bob
       rig.pelvis.rotation.z = p.torsoRoll
-      rig.torso.rotation.set(-p.torsoLean, p.torsoTwist, 0)
+      rig.torso.rotation.set(p.torsoLean, p.torsoTwist, 0)
       rig.head.rotation.set(-p.headPitch, p.headYaw, 0)
       rig.arm[0].rotation.x = -p.shoulderL
       rig.arm[1].rotation.x = -p.shoulderR
@@ -291,7 +429,7 @@ function Crowd() {
                   r.userData.painted = true
                   const c = new THREE.Color()
                   HUMANS.forEach(({ i }, k) => {
-                    c.set(npcLook(i)[PART_COLOR[part]])
+                    c.set(partColor(part, npcLook(i)))
                     for (let s = 0; s < PART_COUNT[part]; s++) {
                       r.setColorAt(k * PART_COUNT[part] + s, c)
                     }
@@ -307,18 +445,20 @@ function Crowd() {
             >
               <meshToonMaterial gradientMap={toonGradient} />
             </instancedMesh>
-            <instancedMesh
-              ref={(r) => {
-                meshes.current[`${part}#ink`] = r
-                if (r) {
-                  r.count = 0
-                  r.frustumCulled = false
-                }
-              }}
-              args={[GEO[part], undefined, total]}
-            >
-              <meshBasicMaterial color={INK} side={THREE.BackSide} />
-            </instancedMesh>
+            {INKED.has(part) && (
+              <instancedMesh
+                ref={(r) => {
+                  meshes.current[`${part}#ink`] = r
+                  if (r) {
+                    r.count = 0
+                    r.frustumCulled = false
+                  }
+                }}
+                args={[GEO[part], undefined, total]}
+              >
+                <meshBasicMaterial color={INK} side={THREE.BackSide} />
+              </instancedMesh>
+            )}
           </group>
         )
       })}

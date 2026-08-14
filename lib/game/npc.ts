@@ -1,8 +1,9 @@
-import * as THREE from "three"
+﻿import * as THREE from "three"
 import { NPCS, WATER_LEVEL } from "./data"
 import { METRO_LOOP } from "./terrain"
 import { civicPlotReport, corridorSurface, groundOrDeck, propCollision, spinAlong } from "./props"
-import { characterPose, emptyPose, type Pose } from "./character"
+import { characterPose, emptyPose, reachFor, type Pose } from "./character"
+import { lookFor, type NpcLook } from "./looks"
 
 /**
  * NPC brains and looks. Pure logic, no React, so the harness can assert the
@@ -24,25 +25,28 @@ export const ARCHETYPE: Record<string, Archetype> = {
   // stalls and stock
   "flower-radha": "VENDOR",
   "chai-wala": "VENDOR",
-  "manager-verma": "VENDOR",
   amma: "VENDOR",
-  // hands-on work
+  // Hands-on work. Iyer and Deva moved here in P52: an engineer setting a
+  // pump housing and a boatman fighting a knot are both crouched over a thing
+  // with their hands, which is exactly what TRADESMAN animates.
   "mechanic-gopal": "TRADESMAN",
   "mill-worker-a": "TRADESMAN",
   "mill-worker-b": "TRADESMAN",
   "mill-worker-c": "TRADESMAN",
+  "engineer-iyer": "TRADESMAN",
+  "boatman-deva": "TRADESMAN",
   // sitting, talking, watching
   "kid-chintu": "IDLER",
   "sadhu-wanderer": "IDLER",
   "musician-iqbal": "IDLER",
-  "boatman-deva": "IDLER",
   "boss-verma-senior": "IDLER",
   // temple
   "priest-baba": "DEVOTEE",
-  // desks and rounds
+  // Desks and rounds. Verma moved here from VENDOR: a Deputy Regional
+  // Assistant Sub-Manager does not mind a stall, he walks about with a board.
   "raju-clerk": "COMMUTER",
   "coder-priya": "COMMUTER",
-  "engineer-iyer": "COMMUTER",
+  "manager-verma": "COMMUTER",
   "engineer-rao": "COMMUTER",
   // animals
   "street-dog": "ANIMAL",
@@ -51,53 +55,17 @@ export const ARCHETYPE: Record<string, Archetype> = {
 
 /* ------------------------------------------------------------------ looks */
 
-export type NpcLook = {
-  skin: string
-  hair: string
-  shirt: string
-  pants: string
-  shoe: string
-  /** sash / dupatta / bag — the one saturated note per villager */
-  accent: string
-  /** overall scale, 0.9–1.1 of the 1.8u reference */
-  height: number
-  /** headwear: 0 none, 1 cap, 2 turban/scarf, 3 tall cap */
-  hat: number
-  /** per-npc animation offset, so nobody breathes or steps in sync */
-  phase: number
-}
-
-const SKINS = ["#c39160", "#b5814e", "#9d6a3c", "#a8763f", "#8d5c31"]
-const HAIRS = ["#1f1a16", "#2b2420", "#141110", "#3a2f26", "#5c5148"]
-const SHIRTS = [
-  "#4d5a6b", "#7d6b8a", "#c8543f", "#3f7f5c", "#d8cbb0",
-  "#5e7ba6", "#b5763a", "#7a8b52", "#a53f52", "#40707d",
-]
-const PANTS = ["#8b7d5f", "#4a4640", "#6a6250", "#2f3a45", "#7a6a58"]
-const SHOES = ["#e2ded2", "#3a3630", "#7a5c3a", "#4a4a52"]
-const ACCENTS = ["#f4531f", "#f2a03d", "#d8324b", "#2f8f7f", "#e8d24a", "#8e4fb0"]
-
-/** deterministic per-index hash, so the roster is identical every load */
-function h(i: number, salt: number) {
-  const x = Math.sin(i * 127.1 + salt * 311.7) * 43758.5453
-  return x - Math.floor(x)
-}
+/**
+ * Costumes are AUTHORED, one entry per villager, in looks.ts. This used to be
+ * a Math.sin hash over colour palettes, which is precisely why nobody looked
+ * like who they were: a hash can make twenty strangers, but only an author can
+ * make a flower seller.
+ */
+export type { NpcLook } from "./looks"
+export { LOOKS } from "./looks"
 
 export function npcLook(index: number): NpcLook {
-  const npc = NPCS[index]
-  const pick = <T,>(arr: T[], salt: number) => arr[Math.floor(h(index, salt) * arr.length) % arr.length]
-  return {
-    // the authored per-npc colours still lead; the palettes fill the rest
-    skin: pick(SKINS, 1),
-    hair: npc.hair ?? pick(HAIRS, 2),
-    shirt: npc.outfit ?? pick(SHIRTS, 3),
-    pants: pick(PANTS, 4),
-    shoe: pick(SHOES, 5),
-    accent: npc.color ?? pick(ACCENTS, 6),
-    height: 0.9 + h(index, 7) * 0.2,
-    hat: Math.floor(h(index, 8) * 4),
-    phase: h(index, 9),
-  }
+  return lookFor(NPCS[index]?.id ?? "")
 }
 
 /* ------------------------------------------------------- where they may go */
@@ -268,6 +236,46 @@ const _in = {
 }
 
 /**
+ * The work surface each villager reaches for, in their own frame: the height
+ * of the top and the forward distance to the middle of it. These mirror the
+ * WORKSTATIONS placed in props.ts — the animation aims at the object rather
+ * than gesturing near it, which is what "hammers nothing" meant before.
+ */
+const REACH: Record<string, { y: number; z: number }> = {
+  "chai-wala": { y: 0.83, z: 0.5 },
+  amma: { y: 0.83, z: 0.5 },
+  "flower-radha": { y: 0.78, z: 0.48 },
+  "mechanic-gopal": { y: 0.56, z: 0.44 },
+  "mill-worker-a": { y: 0.56, z: 0.44 },
+  "mill-worker-b": { y: 0.56, z: 0.44 },
+  "mill-worker-c": { y: 0.56, z: 0.44 },
+  "engineer-iyer": { y: 0.56, z: 0.44 },
+  "boatman-deva": { y: 0.56, z: 0.44 },
+  "priest-baba": { y: 0.63, z: 0.62 },
+}
+
+/** put both hands on the work surface, allowing for the lean and the scale */
+function handsOn(
+  pose: Pose,
+  id: string,
+  height: number,
+  dz = 0,
+  dy = 0,
+  spread = 0.06,
+) {
+  const r = REACH[id]
+  if (!r) return
+  const zy = (r.y + dy) * height
+  const zz = (r.z + dz) * height
+  const l = reachFor(zz, zy, pose.bob, pose.torsoLean, -1)
+  const rr = reachFor(zz + spread, zy, pose.bob, pose.torsoLean, 1)
+  pose.shoulderL = l.shoulder
+  pose.elbowL = l.elbow
+  pose.shoulderR = rr.shoulder
+  pose.elbowR = rr.elbow
+}
+
+/**
  * One villager's motion at time `t`. Deterministic in (index, t, playerNear),
  * so it needs no per-frame mutable state and cannot desynchronise — the
  * "state machine" is a time-driven selector plus one reactive input.
@@ -312,20 +320,17 @@ export function npcMotion(
         pose.elbowR = 1.1 - w * 0.4
         pose.headYaw += 0.25
       } else if (f < 0.35) {
+        // arranging the stock: both hands ON the counter, working along it
         out.state = "arrange"
         const k = Math.sin((f / 0.35) * Math.PI * 4)
-        pose.torsoLean += 0.45
-        pose.shoulderL = -0.9 + k * 0.35
-        pose.shoulderR = -0.9 - k * 0.35
-        pose.elbowL = 1.3
-        pose.elbowR = 1.3
-        pose.headPitch -= 0.4
+        pose.torsoLean += 0.5
+        pose.headPitch -= 0.45
+        handsOn(pose, npc.id, look.height, k * 0.07, 0.02)
       } else {
+        // tending: hands resting on the near edge of the counter
         out.state = "tend"
-        pose.shoulderL = -0.15
-        pose.shoulderR = -0.15
-        pose.elbowL = 0.6
-        pose.elbowR = 0.6
+        pose.torsoLean += 0.18
+        handsOn(pose, npc.id, look.height, -0.08, 0.04)
       }
       break
     }
@@ -341,11 +346,10 @@ export function npcMotion(
         pose.bob -= 0.34
         pose.torsoLean += 0.55
         pose.headPitch -= 0.5
-        const hammer = Math.sin(t * 7 + look.phase * 6)
-        pose.shoulderR = -0.5 - Math.max(0, hammer) * 0.8
-        pose.elbowR = 1.2 + Math.max(0, hammer) * 0.9
-        pose.shoulderL = -0.6
-        pose.elbowL = 1.4
+        // the hammer stroke LANDS on the crate: the down position is the work
+        // surface itself, the up position is one swing above it
+        const hammer = Math.max(0, Math.sin(t * 5 + look.phase * 6))
+        handsOn(pose, npc.id, look.height, 0, hammer * 0.34, 0.1)
       } else if (f < 0.78) {
         // stand and wipe the hands
         out.state = "wipe"
@@ -414,16 +418,14 @@ export function npcMotion(
         pose.elbowL = 1.2
         pose.elbowR = 1.2
       } else {
+        // bowing to the shrine: hands come together at the offering tray
         out.state = "bow"
         characterPose(_in, pose)
         const k = Math.sin(((f - 0.7) / 0.3) * Math.PI)
         pose.torsoLean += 1.0 * k
         pose.headPitch -= 0.5 * k
-        pose.shoulderL = -0.5 - 0.6 * k
-        pose.shoulderR = -0.5 - 0.6 * k
-        pose.elbowL = 1.9
-        pose.elbowR = 1.9
         pose.bob -= 0.1 * k
+        handsOn(pose, npc.id, look.height, -0.1 * (1 - k), 0.1 * (1 - k), 0.02)
       }
       break
     }

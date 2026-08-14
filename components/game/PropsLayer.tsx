@@ -319,6 +319,160 @@ function PropInstance({ p }: { p: PlacedProp }) {
           </mesh>
         </group>
       )
+    case "stall-counter":
+      // a vendor's counter: top at 0.75, the height the arrange-stock pose reaches
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          <mesh position={[0, 0.68, 0]} castShadow receiveShadow>
+            <boxGeometry args={[1.25, 0.14, 0.6]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {[-0.52, 0.52].map((x) => (
+            <mesh key={x} position={[x, 0.3, 0]} castShadow>
+              <boxGeometry args={[0.11, 0.62, 0.5]} />
+              <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+              <Ink />
+            </mesh>
+          ))}
+          {/* goods on the counter: stacked glasses and a cash tin */}
+          {[-0.34, -0.2, -0.06].map((x, k) => (
+            <mesh key={k} position={[x, 0.81, 0.08]}>
+              <cylinderGeometry args={[0.045, 0.04, 0.12, 6]} />
+              <meshToonMaterial color="#e8e3d6" gradientMap={toonGradient} />
+            </mesh>
+          ))}
+          <mesh position={[0.32, 0.81, -0.05]} castShadow>
+            <boxGeometry args={[0.26, 0.14, 0.2]} />
+            <meshToonMaterial color="#7d6a4a" gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {/* the kettle */}
+          <mesh position={[0.05, 0.85, -0.14]} castShadow>
+            <cylinderGeometry args={[0.09, 0.11, 0.2, 8]} />
+            <meshToonMaterial color="#8d8880" gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+        </group>
+      )
+    case "flower-spread":
+      // low platform of marigold and jasmine heaps, at seated-hand height
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          <mesh position={[0, 0.31, 0]} castShadow receiveShadow>
+            <boxGeometry args={[1.1, 0.62, 0.7]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {[
+            [-0.34, "#e8a020"],
+            [-0.06, "#f2c744"],
+            [0.22, "#e8e3d6"],
+            [0.44, "#d8642a"],
+          ].map(([x, c], k) => (
+            <mesh key={k} position={[x as number, 0.72, 0.02]} castShadow>
+              <sphereGeometry args={[0.16, 7, 5]} />
+              <meshToonMaterial color={c as string} gradientMap={toonGradient} />
+              <Ink />
+            </mesh>
+          ))}
+          {/* the brass scale every flower seller weighs by */}
+          <mesh position={[0.44, 0.68, -0.24]}>
+            <boxGeometry args={[0.03, 0.22, 0.03]} />
+            <meshToonMaterial color="#b8934a" gradientMap={toonGradient} />
+          </mesh>
+          <mesh position={[0.44, 0.8, -0.24]}>
+            <boxGeometry args={[0.3, 0.022, 0.03]} />
+            <meshToonMaterial color="#b8934a" gradientMap={toonGradient} />
+          </mesh>
+        </group>
+      )
+    case "work-crate":
+      // the thing a crouched tradesman works over: crate, tools, a part
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          <mesh position={[0, 0.24, 0]} castShadow receiveShadow>
+            <boxGeometry args={[0.72, 0.48, 0.54]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {/* plank lines, so it reads as a crate and not a block */}
+          {[0.12, 0.3].map((y) => (
+            <mesh key={y} position={[0, y, 0.28]}>
+              <boxGeometry args={[0.74, 0.02, 0.01]} />
+              <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+            </mesh>
+          ))}
+          {/* the part being worked on, sitting on top */}
+          <mesh position={[0, 0.53, 0.02]} castShadow>
+            <boxGeometry args={[0.34, 0.12, 0.26]} />
+            <meshToonMaterial color="#6b6f74" gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {/* a spanner and a hammer head laid beside it */}
+          <mesh position={[0.24, 0.5, -0.14]} rotation={[0, 0.4, 0]}>
+            <boxGeometry args={[0.22, 0.025, 0.045]} />
+            <meshToonMaterial color="#9aa0a6" gradientMap={toonGradient} />
+          </mesh>
+          <mesh position={[-0.24, 0.5, -0.16]} rotation={[0, -0.3, 0]}>
+            <boxGeometry args={[0.18, 0.03, 0.035]} />
+            <meshToonMaterial color="#5a4a34" gradientMap={toonGradient} />
+          </mesh>
+        </group>
+      )
+    case "sit-step":
+      // a low stone step or wall — what the sitting pose actually rests on
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          <mesh position={[0, 0.2, 0]} castShadow receiveShadow>
+            <boxGeometry args={[1.3, 0.4, 0.62]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          <mesh position={[0, 0.41, 0]} receiveShadow>
+            <boxGeometry args={[1.36, 0.045, 0.68]} />
+            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+        </group>
+      )
+    case "shrine":
+      // small stone shrine with a bell and an offering tray to bow to
+      return (
+        <group position={pos} quaternion={quat} scale={p.scale}>
+          <mesh position={[0, 0.3, 0]} castShadow receiveShadow>
+            <boxGeometry args={[0.62, 0.6, 0.5]} />
+            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          <mesh position={[0, 0.72, 0]} castShadow>
+            <coneGeometry args={[0.34, 0.42, 6]} />
+            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {/* the niche */}
+          <mesh position={[0, 0.36, 0.26]}>
+            <boxGeometry args={[0.26, 0.3, 0.03]} />
+            <meshToonMaterial color="#3a332b" gradientMap={toonGradient} />
+          </mesh>
+          {/* offering tray at hand height for the bow */}
+          <mesh position={[0, 0.63, 0.3]} castShadow>
+            <cylinderGeometry args={[0.16, 0.16, 0.04, 8]} />
+            <meshToonMaterial color="#b8934a" gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+          {/* bell hanging on a post beside it */}
+          <mesh position={[0.42, 0.55, 0.1]}>
+            <boxGeometry args={[0.04, 1.1, 0.04]} />
+            <meshToonMaterial color="#8d8880" gradientMap={toonGradient} />
+          </mesh>
+          <mesh position={[0.42, 0.98, 0.1]} castShadow>
+            <coneGeometry args={[0.1, 0.18, 6]} />
+            <meshToonMaterial color="#c9a227" gradientMap={toonGradient} />
+            <Ink />
+          </mesh>
+        </group>
+      )
     case "civic-pad":
       // draped onto the ground it covers — see CivicPad
       return <CivicPad p={p} />

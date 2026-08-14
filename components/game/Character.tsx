@@ -95,7 +95,10 @@ export function Character({ pose, skin = AARAV, carrying = false }: Props) {
       pelvis.current.rotation.z = p.torsoRoll
     }
     if (torso.current) {
-      torso.current.rotation.x = -p.torsoLean
+      // +lean tips the chest FORWARD. It was negated here, which leaned the
+      // runner and every working crouch backwards — caught by the arm IK,
+      // which could not reach a crate the body was leaning away from.
+      torso.current.rotation.x = p.torsoLean
       torso.current.rotation.y = p.torsoTwist
     }
     if (head.current) {
