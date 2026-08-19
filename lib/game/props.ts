@@ -80,6 +80,12 @@ export type PlacedProp = {
   width?: number
   /** GLB under public/, e.g. "/models/x.glb". Only "glb-building" uses this. */
   modelPath?: string
+  /** keep only meshes whose name starts with this — splits multi-object files */
+  part?: string
+  /** multiplied over the model's baked colours, so one model gives many looks */
+  tint?: string
+  /** false for trees and street pieces, which need no foundation slab */
+  plinth?: boolean
   /**
    * Per-prop collision box (model units, multiplied by `scale`). Buildings
    * carry their own footprint because every GLB differs, while COLLIDER_SPECS
@@ -1927,6 +1933,7 @@ export function buildProps(): PlacedProp[] {
   placeGlbBuildings(props)
   placeStreetAnimals(props)
   placeWorkstations(props)
+  placeZoneBuildings(props)
 
   return props
 }
@@ -2116,6 +2123,304 @@ export const GLB_BUILDINGS: GlbBuildingSpec[] = [
   },
 ]
 
+
+/* ------------------------------------------------------- zone build-out */
+
+/**
+ * What stands in each zone, from WORLD_DESIGN's character for that place.
+ *
+ * `tints` is the point of the table: the library is small, so the SAME model
+ * is reused across and within zones and told apart by colour. Each placement
+ * takes the next tint in the list, so no two copies of a model in a zone can
+ * come out the same, and a shopfront row at KR Market never matches one on
+ * SP Road.
+ */
+type ZoneBuild = {
+  path: string
+  /** mesh-name prefix, for the multi-object files */
+  part?: string
+  count: number
+  scale: number
+  /** collision half-extents and height, in MODEL units */
+  box: { hx: number; hz: number; top: number }
+  tints: string[]
+  /** how much clear ground this needs around its centre */
+  radius: number
+  /** trees and street pieces stand on soil, not on a foundation slab */
+  plinth?: boolean
+}
+
+const M = "/models/"
+
+export const ZONE_BUILDINGS: Record<string, ZoneBuild[]> = {
+  // KR Market — the densest place on the planet: shopfronts, stores, stalls
+  bazaar: [
+    { path: `${M}Hotel Building.glb`, count: 3, scale: 0.85, box: { hx: 3.5, hz: 1.4, top: 2.4 }, radius: 4.6,
+      tints: ["#e8d7b8", "#cfa98a", "#b8c6cf"] },
+    { path: `${M}deco-shopfront-row.glb`, count: 2, scale: 0.5, box: { hx: 4.1, hz: 2.6, top: 5.3 }, radius: 4.2,
+      tints: ["#d8b48a", "#9fb4a2"] },
+    { path: `${M}bld-general-store-01.glb`, count: 2, scale: 0.7, box: { hx: 1.7, hz: 1.9, top: 3.2 }, radius: 3.0,
+      tints: ["#c8543f", "#e0b350"] },
+  ],
+  // SP Road — the electronics lane: narrow frontages, signage, one midrise
+  samadhi: [
+    { path: `${M}Hotel Building.glb`, count: 2, scale: 0.8, box: { hx: 3.5, hz: 1.4, top: 2.4 }, radius: 4.4,
+      tints: ["#8fa6b8", "#c3b393"] },
+    { path: `${M}Building Red Corner by J-Toastie - 9JuFwnivP0.glb`, count: 2, scale: 1.1, box: { hx: 0.7, hz: 1.8, top: 3.5 }, radius: 2.6,
+      tints: ["#b8563f", "#5f7f96"] },
+    { path: `${M}apartments2.glb`, count: 2, scale: 1.0, box: { hx: 1.0, hz: 1.0, top: 3.1 }, radius: 2.4,
+      tints: ["#c9b48f", "#93a3ad"] },
+    { path: `${M}hotel-neon-blade.glb`, count: 2, scale: 0.9, box: { hx: 0.7, hz: 0.5, top: 6.5 }, radius: 1.8,
+      tints: ["#e0533a", "#3fa3c8"] },
+  ],
+  // Binny Mills — weaving sheds, worker housing, goods on the siding
+  mill: [
+    { path: `${M}big-red-barn.glb`, count: 3, scale: 0.75, box: { hx: 4.4, hz: 3.9, top: 5.4 }, radius: 6.4,
+      tints: ["#8a8f93", "#9c7060", "#7f8a7a"] },
+    { path: `${M}bungalow-house.glb`, count: 2, scale: 0.65, box: { hx: 3.0, hz: 2.8, top: 5.1 }, radius: 4.4,
+      tints: ["#d6c8a8", "#b9a98c"] },
+    { path: `${M}container-flat-wagon.glb`, count: 2, scale: 1.0, box: { hx: 0.7, hz: 1.8, top: 1.4 }, radius: 2.6,
+      tints: ["#7a6a52", "#5f6f7a"], plinth: false },
+  ],
+  // Bengaluru Palace — one grand building, boundary wall, mature grounds
+  haveli: [
+    { path: `${M}palace_.glb`, count: 1, scale: 0.32, box: { hx: 14.5, hz: 19.4, top: 22.7 }, radius: 6.0,
+      tints: ["#e2d6bb"] },
+    { path: `${M}arborvitae_conifer.glb`, count: 4, scale: 1.0, box: { hx: 0.8, hz: 0.9, top: 3.3 }, radius: 2.2,
+      tints: ["#4f7a44", "#3f6b3a", "#5a8a4e", "#456f40"], plinth: false },
+    { path: `${M}Stone Wall by Quaternius - tdeAOh3LQV.glb`, count: 6, scale: 1.6, box: { hx: 0.8, hz: 0.2, top: 0.2 },
+      radius: 1.6, tints: ["#c9c0ae"], plinth: false },
+  ],
+  // Nandi Betta — the climb is the point: steps, a hut, nothing crowding it
+  temple: [
+    { path: `${M}Stairs.glb`, count: 3, scale: 1.4, box: { hx: 0.9, hz: 1.5, top: 1.4 }, radius: 2.6,
+      tints: ["#cfc4ae", "#c4b9a3", "#d6cbb5"], plinth: false },
+    { path: `${M}bait-shack.glb`, count: 1, scale: 0.8, box: { hx: 1.3, hz: 1.5, top: 3.5 }, radius: 2.8,
+      tints: ["#d8b06a"] },
+  ],
+  // Dodda Alada Mara — a park. No buildings at all, only palms and seating.
+  grove: [
+    { path: `${M}Palm Trees by Quaternius - VYslw9DEi6.glb`, part: "PalmTree_1", count: 2, scale: 1.0,
+      box: { hx: 0.5, hz: 0.5, top: 5.2 }, radius: 3.0, tints: ["#5c8a3f", "#4e7a36"], plinth: false },
+    { path: `${M}Palm Trees by Quaternius - VYslw9DEi6.glb`, part: "PalmTree_4", count: 2, scale: 1.1,
+      box: { hx: 0.5, hz: 0.5, top: 5.2 }, radius: 3.0, tints: ["#67965a", "#568444"], plinth: false },
+    { path: `${M}bench-01.glb`, count: 4, scale: 1.0, box: { hx: 0.7, hz: 0.3, top: 1.0 }, radius: 1.8,
+      tints: ["#8a6a4a", "#7a5f42", "#96775a", "#6f5638"], plinth: false },
+    { path: `${M}cafe-table-chairs.glb`, count: 2, scale: 1.0, box: { hx: 0.9, hz: 0.4, top: 0.9 }, radius: 2.0,
+      tints: ["#b8a68a", "#a2907a"], plinth: false },
+  ],
+  // Cauvery Riverside — stone steps to the water, a shrine hut, small houses
+  ghat: [
+    { path: `${M}Stairs.glb`, count: 4, scale: 1.5, box: { hx: 0.9, hz: 1.6, top: 1.4 }, radius: 2.8,
+      tints: ["#c4bba7", "#cfc6b0", "#b9b09c", "#c9c0aa"], plinth: false },
+    { path: `${M}bait-shack.glb`, count: 2, scale: 0.75, box: { hx: 1.3, hz: 1.5, top: 3.5 }, radius: 2.8,
+      tints: ["#c08a5a", "#a8926a"] },
+    { path: `${M}bungalow-house.glb`, count: 1, scale: 0.6, box: { hx: 3.0, hz: 2.8, top: 5.1 }, radius: 4.2,
+      tints: ["#cbb894"] },
+  ],
+  // Gopal's Garage — a yard: dismantled vehicles, a bench, a shed
+  workshop: [
+    { path: `${M}Broken Car for garage.glb`, count: 2, scale: 0.45, box: { hx: 1.3, hz: 0.9, top: 2.4 }, radius: 2.4,
+      tints: ["#8a5f4a", "#6a7a86"], plinth: false },
+    { path: `${M}car-sedan-01.glb`, count: 1, scale: 1.0, box: { hx: 0.6, hz: 1.5, top: 0.8 }, radius: 2.2,
+      tints: ["#4a6f8a"], plinth: false },
+    { path: `${M}Bench for garage.glb`, count: 1, scale: 1.0, box: { hx: 1.3, hz: 0.6, top: 1.6 }, radius: 2.0,
+      tints: ["#7a6a52"], plinth: false },
+  ],
+  // Sampangi Kere — 6u² of buildable ground. Palms only, and few.
+  beach: [
+    { path: `${M}Palm Trees by Quaternius - VYslw9DEi6.glb`, part: "PalmTree_2", count: 2, scale: 1.0,
+      box: { hx: 0.5, hz: 0.5, top: 5.2 }, radius: 2.6, tints: ["#5f9150", "#4f7f44"], plinth: false },
+    { path: `${M}Palm Trees by Quaternius - VYslw9DEi6.glb`, part: "PalmTree_5", count: 1, scale: 1.05,
+      box: { hx: 0.5, hz: 0.5, top: 5.2 }, radius: 2.6, tints: ["#6a9c5a"], plinth: false },
+  ],
+}
+
+/** everything the build-out actually managed to stand up, for reporting */
+export type ZonePlacement = {
+  zone: string
+  model: string
+  tint: string
+  /** world units from the corridor centreline */
+  road: number
+  footprint: number
+}
+let _zoneBuilt: ZonePlacement[] = []
+export function zoneBuildReport() {
+  return _zoneBuilt
+}
+
+/**
+ * Fill the zones. Candidates are tried on a widening spiral from the zone
+ * centre and accepted only on ground that is dry, gentle, clear of the
+ * corridor, and clear of everything already standing — the same rules the
+ * civic plots use, so a building can never land on a pad, a pillar, a
+ * villager or another building.
+ */
+function placeZoneBuildings(props: PlacedProp[]) {
+  const report: ZonePlacement[] = []
+  const taken: { at: THREE.Vector3; r: number }[] = []
+  let seed = 9600
+
+  for (const zone of ZONES) {
+    const specs = ZONE_BUILDINGS[zone.id]
+    if (!specs) continue
+    const c = new THREE.Vector3(...zone.center).normalize()
+    const R0 = terrainRadius(c)
+    const t1 = Math.abs(c.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)
+    const u = new THREE.Vector3().crossVectors(t1, c).normalize()
+    const v = new THREE.Vector3().crossVectors(c, u).normalize()
+
+    for (const spec of specs) {
+      for (let k = 0; k < spec.count; k++) {
+        let placed = false
+        // widening spiral: near the centre first, out to the zone edge
+        for (let ring = 1; ring <= 26 && !placed; ring++) {
+          const rad = (ring / 26) * (zone.radius + 6)
+          const steps = 8 + ring * 4
+          const phase = (k * 2.399 + ring * 0.7) % (Math.PI * 2)
+          for (let s = 0; s < steps && !placed; s++) {
+            const a = phase + (s / steps) * Math.PI * 2
+            const dir = c
+              .clone()
+              .addScaledVector(u, (Math.cos(a) * rad) / R0)
+              .addScaledVector(v, (Math.sin(a) * rad) / R0)
+              .normalize()
+            const g = terrainRadius(dir)
+            if (g < WATER_LEVEL + 0.8) continue
+            if (slopeAt(dir, g) > 0.40) continue
+            // never inside the road corridor or its suppression band
+            if (arterialDistance(dir) < CORRIDOR_SUPPRESS) continue
+            const at = dir.clone().multiplyScalar(g)
+            // clear of everything already standing, including this pass
+            if (propClearance(at, props).nearest < spec.radius) continue
+            if (!npcClearance(at).ok) continue
+            let clash = false
+            for (const t of taken) {
+              if (t.at.distanceTo(at) < t.r + spec.radius) {
+                clash = true
+                break
+              }
+            }
+            if (clash) continue
+
+            // face the road when there is one within reach, else the zone centre
+            const roadDir = loopDirRaw(nearestLoopT(dir), new THREE.Vector3())
+            const near = arterialDistance(dir) < 16
+            const toward = arcTangent(dir, near ? roadDir : c)
+            const spin = toward
+              ? spinAlong(dir, new THREE.Vector3().crossVectors(dir, toward))
+              : 0
+            const tint = spec.tints[k % spec.tints.length]
+            props.push({
+              kind: "glb-building",
+              position: at,
+              quaternion: surfaceQuaternion(dir, spin),
+              scale: spec.scale,
+              colorA: tint,
+              colorB: tint,
+              seed: seed++,
+              modelPath: spec.path,
+              part: spec.part,
+              tint,
+              plinth: spec.plinth,
+              box: spec.box,
+            })
+            taken.push({ at, r: spec.radius })
+            report.push({
+              zone: zone.id,
+              model: spec.path.split("/").pop()!.replace(/\.glb$/, "") + (spec.part ? `:${spec.part}` : ""),
+              tint,
+              road: arterialDistance(dir),
+              footprint: Math.PI * spec.radius * spec.radius,
+            })
+            placed = true
+          }
+        }
+        if (!placed) {
+          report.push({
+            zone: zone.id,
+            model: spec.path.split("/").pop()!.replace(/\.glb$/, "") + (spec.part ? `:${spec.part}` : "") + " [NO ROOM]",
+            tint: "-",
+            road: NaN,
+            footprint: 0,
+          })
+        }
+      }
+    }
+  }
+  _zoneBuilt = report
+  placeRoadside(props)
+}
+
+/**
+ * Parked vehicles and street furniture along the frontages. They sit just
+ * OUTSIDE the corridor suppression band, so they read as kerbside without
+ * ever standing on the carriageway.
+ */
+function placeRoadside(props: PlacedProp[]) {
+  const net = NET
+  if (!net) return
+  const spots: { t: number; side: number; path: string; scale: number; tint: string; box: { hx: number; hz: number; top: number } }[] = []
+  const CARS = [
+    { path: `${M}car-sedan-01.glb`, scale: 1, tint: "#c8543f", box: { hx: 0.6, hz: 1.5, top: 0.8 } },
+    { path: `${M}car-sedan-01.glb`, scale: 1, tint: "#4a6f8a", box: { hx: 0.6, hz: 1.5, top: 0.8 } },
+    { path: `${M}car-sedan-01.glb`, scale: 1, tint: "#e0c060", box: { hx: 0.6, hz: 1.5, top: 0.8 } },
+    { path: `${M}Police Car.glb`, scale: 1, tint: "#e8e4da", box: { hx: 0.9, hz: 1.9, top: 1.2 } },
+    { path: `${M}sports_car.glb`, scale: 1, tint: "#b83f52", box: { hx: 1.0, hz: 2.0, top: 1.2 } },
+  ]
+  const SEATS = [
+    { path: `${M}bench-01.glb`, scale: 1, tint: "#8a6a4a", box: { hx: 0.7, hz: 0.3, top: 1.0 } },
+    { path: `${M}bench-01.glb`, scale: 1, tint: "#6f5638", box: { hx: 0.7, hz: 0.3, top: 1.0 } },
+  ]
+  // spread along the loop, alternating sides
+  for (let i = 0; i < 10; i++) {
+    const t = ((i + 0.35) / 10) * net.total
+    const kit = i % 3 === 2 ? SEATS[i % SEATS.length] : CARS[i % CARS.length]
+    spots.push({ t, side: i % 2 === 0 ? 1 : -1, ...kit })
+  }
+
+  let seed = 9800
+  const dir = new THREE.Vector3()
+  const ahead = new THREE.Vector3()
+  for (const s of spots) {
+    loopDir(s.t, dir)
+    loopDir(s.t + 0.01, ahead)
+    const fwd = ahead.clone().sub(dir)
+    fwd.addScaledVector(dir, -fwd.dot(dir))
+    if (fwd.lengthSq() < 1e-12) continue
+    fwd.normalize()
+    const right = new THREE.Vector3().crossVectors(fwd, dir).normalize()
+    const g = terrainRadius(dir)
+    // walk out from the kerb until clear of the suppression band and legal
+    let done = false
+    for (let lat = CORRIDOR_SUPPRESS + 0.6; lat <= CORRIDOR_SUPPRESS + 4 && !done; lat += 0.5) {
+      const d = dir.clone().addScaledVector(right, (s.side * lat) / g).normalize()
+      const gr = terrainRadius(d)
+      if (gr < WATER_LEVEL + 0.8) continue
+      if (slopeAt(d, gr) > 0.3) continue
+      if (corridorSurface(d) !== null) continue
+      const at = d.clone().multiplyScalar(gr)
+      if (propClearance(at, props).nearest < 2.2) continue
+      if (!npcClearance(at).ok) continue
+      props.push({
+        kind: "glb-building",
+        position: at,
+        // parked along the kerb, nose down the road
+        quaternion: surfaceQuaternion(d, spinAlong(d, fwd)),
+        scale: s.scale,
+        colorA: s.tint,
+        colorB: s.tint,
+        seed: seed++,
+        modelPath: s.path,
+        tint: s.tint,
+        plinth: false,
+        box: s.box,
+      })
+      done = true
+    }
+  }
+}
 function placeGlbBuildings(props: PlacedProp[]) {
   let seed = 9100
   for (const b of GLB_BUILDINGS) {

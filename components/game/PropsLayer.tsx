@@ -17,6 +17,7 @@ import {
   type PlacedProp,
 } from "@/lib/game/props"
 import { rng, terrainRadius } from "@/lib/game/terrain"
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js"
 import { toonGradient } from "@/lib/game/toon"
 import { KANNADA_FONT_STACK, makeSignTexture } from "@/lib/game/signage"
 
@@ -170,67 +171,99 @@ for (const b of GLB_BUILDINGS) useGLTF.preload(b.path, DRACO_PATH)
  * base colour and vertex colours) with the standard ink outline, and a buried
  * plinth bridges the downhill gap on sloped sites so the base never shows air.
  */
+/**
+ * One merged geometry per (model, part) pair, built once and shared by every
+ * placement of it.
+ *
+ * A GLB may arrive as hundreds of little meshes — Hotel Building is 164, the
+ * stoop 46 — and drawing each one separately costs a draw call per mesh per
+ * building, which dwarfs everything else in the scene. Every mesh is baked
+ * into a SINGLE vertex-coloured geometry instead: each source material's
+ * colour is written into the vertices, so the flat toon look survives while
+ * the whole model draws in one call. `part` keeps only the meshes whose name
+ * starts with it, which is how the five palms come out of one file.
+ */
+const glbCache = new Map<string, { geo: THREE.BufferGeometry; hx: number; hz: number }>()
+
+function mergedGlb(scene: THREE.Object3D, key: string, part?: string) {
+  const hit = glbCache.get(key)
+  if (hit) return hit
+  scene.updateMatrixWorld(true)
+  const picked: THREE.Mesh[] = []
+  scene.traverse((o) => {
+    const m = o as THREE.Mesh
+    if (!m.isMesh) return
+    if (part && !(m.name ?? "").startsWith(part)) return
+    picked.push(m)
+  })
+  const box = new THREE.Box3()
+  for (const m of picked) box.expandByObject(m)
+  const rebase = new THREE.Matrix4().makeTranslation(
+    -(box.min.x + box.max.x) / 2,
+    -box.min.y,
+    -(box.min.z + box.max.z) / 2,
+  )
+  const chunks: THREE.BufferGeometry[] = []
+  const c = new THREE.Color()
+  for (const m of picked) {
+    const g = (m.geometry as THREE.BufferGeometry).clone()
+    g.applyMatrix4(new THREE.Matrix4().multiplyMatrices(rebase, m.matrixWorld))
+    const mat = m.material as THREE.MeshStandardMaterial
+    c.set(mat?.color ? mat.color : 0xffffff)
+    const n = g.attributes.position.count
+    const src = g.attributes.color
+    const col = new Float32Array(n * 3)
+    for (let i = 0; i < n; i++) {
+      // keep any authored vertex colour, tinted by the material colour
+      col[i * 3] = c.r * (src ? src.getX(i) : 1)
+      col[i * 3 + 1] = c.g * (src ? src.getY(i) : 1)
+      col[i * 3 + 2] = c.b * (src ? src.getZ(i) : 1)
+    }
+    g.setAttribute("color", new THREE.BufferAttribute(col, 3))
+    // merging needs identical attribute sets
+    for (const name of Object.keys(g.attributes)) {
+      if (!["position", "normal", "color"].includes(name)) g.deleteAttribute(name)
+    }
+    if (!g.attributes.normal) g.computeVertexNormals()
+    if (!g.index) chunks.push(g.toNonIndexed())
+    else chunks.push(g.toNonIndexed())
+  }
+  const geo = chunks.length ? mergeGeometries(chunks, false)! : new THREE.BufferGeometry()
+  const out = {
+    geo,
+    hx: (box.max.x - box.min.x) / 2,
+    hz: (box.max.z - box.min.z) / 2,
+  }
+  glbCache.set(key, out)
+  return out
+}
+
 function GlbBuilding({ p }: { p: PlacedProp }) {
   const { scene } = useGLTF(p.modelPath!, DRACO_PATH)
   const pos = p.position.toArray() as [number, number, number]
   const quat = new THREE.Quaternion(p.quaternion.x, p.quaternion.y, p.quaternion.z, p.quaternion.w)
-  const parts = useMemo(() => {
-    scene.updateMatrixWorld(true)
-    const box = new THREE.Box3().setFromObject(scene)
-    const rebase = new THREE.Matrix4().makeTranslation(
-      -(box.min.x + box.max.x) / 2,
-      -box.min.y,
-      -(box.min.z + box.max.z) / 2,
-    )
-    const meshes: {
-      geo: THREE.BufferGeometry
-      matrix: THREE.Matrix4
-      color: string
-      vertexColors: boolean
-    }[] = []
-    scene.traverse((o) => {
-      const m = o as THREE.Mesh
-      if (!m.isMesh) return
-      const mat = m.material as THREE.MeshStandardMaterial
-      meshes.push({
-        geo: m.geometry as THREE.BufferGeometry,
-        matrix: new THREE.Matrix4().multiplyMatrices(rebase, m.matrixWorld),
-        color: mat?.color ? `#${mat.color.getHexString()}` : "#ffffff",
-        vertexColors: !!(m.geometry as THREE.BufferGeometry).attributes.color,
-      })
-    })
-    return {
-      meshes,
-      hx: (box.max.x - box.min.x) / 2,
-      hz: (box.max.z - box.min.z) / 2,
-    }
-  }, [scene])
+  const parts = useMemo(
+    () => mergedGlb(scene, `${p.modelPath}|${p.part ?? ""}`, p.part),
+    [scene, p.modelPath, p.part],
+  )
   return (
     <group position={pos} quaternion={quat} scale={p.scale}>
-      {parts.meshes.map((it, i) => (
-        <mesh
-          key={i}
-          geometry={it.geo}
-          matrix={it.matrix}
-          matrixAutoUpdate={false}
-          castShadow
-          receiveShadow
-        >
-          <meshToonMaterial
-            color={it.color}
-            vertexColors={it.vertexColors}
-            gradientMap={toonGradient}
-          />
-          <Ink />
-        </mesh>
-      ))}
-      {/* Shallow foundation base: sites are graded level now (P49), so the
-          plinth is a visible 0.04 step with 0.56 buried — no more retaining
-          wall. Scale is divided back out so the step stays constant. */}
-      <mesh position={[0, 0.04 - 0.3, 0]} receiveShadow>
-        <boxGeometry args={[parts.hx * 2 + 0.6, 0.6, parts.hz * 2 + 0.6]} />
-        <meshToonMaterial color="#cfc4ae" gradientMap={toonGradient} />
+      <mesh geometry={parts.geo} castShadow receiveShadow>
+        <meshToonMaterial
+          color={p.tint ?? "#ffffff"}
+          vertexColors
+          gradientMap={toonGradient}
+        />
+        <Ink />
       </mesh>
+      {/* Shallow foundation base. Trees and street pieces set plinth:false —
+          a coconut palm does not stand on a concrete pad. */}
+      {p.plinth !== false && (
+        <mesh position={[0, 0.04 - 0.3, 0]} receiveShadow>
+          <boxGeometry args={[parts.hx * 2 + 0.6, 0.6, parts.hz * 2 + 0.6]} />
+          <meshToonMaterial color="#cfc4ae" gradientMap={toonGradient} />
+        </mesh>
+      )}
     </group>
   )
 }
