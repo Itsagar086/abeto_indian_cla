@@ -536,6 +536,37 @@ function profileGrid(): Float64Array {
       else if (h[i] > raw[i] + ROAD_MAX_FILL) h[i] = raw[i] + ROAD_MAX_FILL
     }
   }
+  // A CROSSING IS STRUCTURE, NOT EARTH. ROAD_MAX_FILL is an earth-fill rule,
+  // and applying it over water dragged the road down into every gorge, so the
+  // bridge then had to climb back out — 27u of ramp for an 18u crossing, and
+  // a deck that sprawled into the neighbouring junction. Over water the
+  // profile instead flies straight between the two banks, and the deck simply
+  // follows it, so road and bridge are the same line by construction.
+  {
+    // Springs from a real BANK, not the water.s edge: the natural ground is
+    // already diving as it approaches a shoreline, so a line starting there
+    // inherits the dive and leaves a 0.67u kink at the bridge mouth.
+    const wet = (i: number) => raw[i] < WATER_LEVEL + 3.2
+    let start = 0
+    while (start < n && wet(start)) start++
+    if (start < n) {
+      for (let k = 0; k < n; k++) {
+        const i = (start + k) % n
+        if (!wet(i)) continue
+        let len = 0
+        while (wet((start + k + len) % n)) len++
+        const a = h[(start + k - 1 + n) % n]
+        const b = h[(start + k + len) % n]
+        for (let j = 0; j < len; j++) {
+          const idx = (start + k + j) % n
+          const f = (j + 1) / (len + 1)
+          const line = a + (b - a) * f
+          if (line > h[idx]) h[idx] = line
+        }
+        k += len - 1
+      }
+    }
+  }
   _profileH = h
   // cumulative WORLD arc length along the profile surface (radial term
   // included) — dash phase and any along-road measure key off this
@@ -570,7 +601,9 @@ export function loopProfileAt(t: number) {
     .normalize()
   const raw = naturalRadius(_lpProbe)
   if (v < raw) v = raw
-  else if (v > raw + ROAD_MAX_FILL) v = raw + ROAD_MAX_FILL
+  // the fill cap is earth only: over water the road is carried by a bridge,
+  // so re-clamping here would pull the deck straight back into the river
+  else if (raw >= WATER_LEVEL + 3.2 && v > raw + ROAD_MAX_FILL) v = raw + ROAD_MAX_FILL
   return v
 }
 

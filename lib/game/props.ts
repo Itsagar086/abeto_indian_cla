@@ -1182,29 +1182,13 @@ function bridgeSpans(): BridgeSpan[] {
         if (arc >= MIN_SPAN) {
           let tA = runStart - BRIDGE_RAMP
           let tB = end + BRIDGE_RAMP
-          // Walk each ramp foot out until the ground under the full
-          // cross-section is dry, then on until it reaches a real BANK.
-          // Landing at the waterline made the road appear to run down into
-          // the river; BANK_CLEAR puts the ramp foot on ground properly
-          // above the water.
-          const BANK_CLEAR = 2.2
-          const atBank = (t: number) => {
-            loopAt(t)
-            return !edgeWet(t) && terrainRadius(probe) >= WATER_LEVEL + BANK_CLEAR
-          }
-          while (!atBank(tA) && runStart - tA < 0.7) tA -= BRIDGE_SAMPLE
-          while (!atBank(tB) && tB - end < 0.7) tB += BRIDGE_SAMPLE
-          const APPROACH_GRADE = 0.35
-          let extra = 0.3
-          while (extra > 0 && gradeAt(tA) > APPROACH_GRADE) {
-            tA -= BRIDGE_SAMPLE
-            extra -= BRIDGE_SAMPLE
-          }
-          extra = 0.3
-          while (extra > 0 && gradeAt(tB) > APPROACH_GRADE) {
-            tB += BRIDGE_SAMPLE
-            extra -= BRIDGE_SAMPLE
-          }
+          // The deck lands where the ground under the FULL cross-section is
+          // dry, and no further. There is no ramp to build any more: the road
+          // is already at deck height on both banks, so a long approach would
+          // only sprawl the structure into the neighbouring junction — which
+          // is what turned an 18u crossing into 45u of platform.
+          while (edgeWet(tA) && runStart - tA < 0.25) tA -= BRIDGE_SAMPLE
+          while (edgeWet(tB) && tB - end < 0.25) tB += BRIDGE_SAMPLE
           // one corridor sample of overlap, as on the arc scan
           tA -= CORRIDOR_STEP
           tB += CORRIDOR_STEP
@@ -1323,15 +1307,11 @@ function bridgeHeight(
   deckR = BRIDGE_DECK_R,
 ) {
   if (span.onLoop) {
-    // An arterial crossing runs as ONE straight grade from bank to bank.
-    // A level deck forced the whole bank-height difference (8.1u at the
-    // samadhi-grove gorge) into the short ramp at the high end, which
-    // measured grade 0.66 — the steep climb onto the bridge. Spread over the
-    // full span it is 0.21, and the deck still clears the water because the
-    // two ends ARE the banks.
-    const f = span.tB > span.tA ? (t - span.tA) / (span.tB - span.tA) : 0
-    const k = Math.max(0, Math.min(1, f))
-    return Math.max(BRIDGE_DECK_R, bankA + (bankB - bankA) * k)
+    // The deck IS the road. Since the profile now flies straight across a
+    // crossing instead of diving into it (see terrain.ts), the carriageway
+    // already runs at bridge height — so the deck simply carries the road
+    // line, and the two can never disagree by construction.
+    return loopProfileAt(t) + ASPHALT_LIFT - DECK_TOP
   }
   if (t <= span.t0) {
     const f = span.t0 > span.tA ? (t - span.tA) / (span.t0 - span.tA) : 1
