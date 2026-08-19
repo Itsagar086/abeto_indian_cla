@@ -21,7 +21,6 @@ import {
 export type PropKind =
   | "stall"
   | "haveli-arch"
-  | "palace"
   | "mill-block"
   | "ghat-steps"
   | "mango-tree"
@@ -114,7 +113,6 @@ const PALETTE: Record<string, [string, string][]> = {
 /** props whose colours belong to the object itself, not to its zone palette */
 const KIND_COLORS: Partial<Record<PropKind, [string, string]>> = {
   banyan: ["#6b4a2f", "#4e7a34"],
-  palace: ["#e8dcc0", "#8a4a3a"],
   guardrail: ["#f2f0e8", "#d8d5cb"],
   "utility-pole": ["#6a5a48", "#4d4136"],
   "grass-tuft": ["#7dbb5a", "#5f9444"],
@@ -238,7 +236,6 @@ const BULKY_KINDS = new Set<PropKind>([
   "stall",
   "market-umbrella",
   "haveli-arch",
-  "palace",
   "mill-block",
   "workshop-shed",
   "ghat-steps",
@@ -253,11 +250,9 @@ const BULKY_KINDS = new Set<PropKind>([
  * `scale`, measured off the geometry in PropsLayer. Only kinds listed here are
  * re-sited away from the arterial corridors; adding a kind opts it in.
  *
- * palace        corner-tower cones reach x +-1.67, entrance face z -0.66
  * workshop-shed the roof cone is a 4-gon spun PI/4, so its vertices sit at 1.6
  */
 const FOOTPRINT: Partial<Record<PropKind, [number, number]>> = {
-  palace: [1.67, 0.66],
   "workshop-shed": [1.6, 1.6],
 }
 
@@ -1822,8 +1817,8 @@ export function buildProps(): PlacedProp[] {
 
       let sited: THREE.Vector3 | null = null
       // Hold the authored bearing and walk outward first. Ensembles are composed
-      // along one bearing — the palace gate sits on the palace's, deliberately —
-      // so keeping it is worth the extra 1.0u this costs the palace.
+      // along one bearing — the haveli gate sits on the palace approach's,
+      // deliberately — so keeping it is worth the extra 1.0u it costs.
       for (let df = distFrac; df <= SITE_MAX_DIST && !sited; df += SITE_DIST_STEP) {
         const cand = at(df)
         if (fits(cand)) sited = cand
@@ -1861,10 +1856,11 @@ export function buildProps(): PlacedProp[] {
   add("lamp-post", "bazaar", 2.4, 0.6, 1, 151)
   add("flag", "bazaar", 1.0, 0.3, 1, 152)
 
-  // --- haveli: Bengaluru Palace behind a gated approach, all on one bearing
-  add("palace", "haveli", 0, 0.3, 1.6, 300, true)
-  // gate on the SAME bearing (angle 0) as the palace, nearer and deliberately
-  // shorter than its towers, with the lamps flanking the approach
+  // --- haveli: Bengaluru Palace. The palace itself, its grounds and its
+  // boundary wall are authored GLB work in placePalace(); what stays here is
+  // the gate ensemble on bearing 0, which placePalace() lines its approach up
+  // with. The old procedural `palace` box-and-cone stood here and was deleted
+  // in P57 — palace_.glb now occupies that ground.
   add("haveli-arch", "haveli", 0, 1.1, 1.0, 301)
   add("lamp-post", "haveli", 0.2, 1.0, 1, 302)
   add("lamp-post", "haveli", -0.2, 1.0, 1, 303)
@@ -1933,9 +1929,75 @@ export function buildProps(): PlacedProp[] {
   placeGlbBuildings(props)
   placeStreetAnimals(props)
   placeWorkstations(props)
+  // streets first, then the palace (it needs to see the streets), then the
+  // ground is graded under every pad at once, and only then are the stairs
+  // fitted -- they must read the FINAL relief or they fit a slope that the
+  // grading is about to flatten
   placeZoneBuildings(props)
+  placePalace(props)
+  gradeBuildingPads(props)
+  placeStairs(props)
+  placeRoadside(props)
 
   return props
+}
+
+/**
+ * Grade every building pad level, the same way the civic plots are graded,
+ * and re-seat anything the new ground moved under.
+ *
+ * Civic pads are re-registered alongside: registerPlotGrading REPLACES its
+ * site list, so the two sets have to go in together or the plots lose their
+ * grading. Re-sampling a civic pad's level on already-graded ground returns
+ * the same number, so this is idempotent for them.
+ */
+function gradeBuildingPads(props: PlacedProp[]) {
+  if (!_buildPads.length) return
+  const civic = _plotSiting
+    .filter((p) => p.ok)
+    .map((p) => ({ dir: p.dir.clone(), radius: p.radius }))
+  const before = props.map((p) =>
+    p.kind === "wire" ? 0 : terrainRadius(_reseatV.copy(p.position).normalize()),
+  )
+  // what the ground looked like under each building BEFORE its pad graded
+  const beforeRel = _builtRefs.map((b) =>
+    rectRelief(b.prop.position, b.prop.quaternion as THREE.Quaternion, b.hl, b.hd),
+  )
+  registerPlotGrading([...civic, ..._buildPads])
+  _padReseats = 0
+  for (let i = 0; i < props.length; i++) {
+    const p = props[i]
+    if (p.kind === "wire") continue
+    // only things actually STANDING on the ground follow it; decks, pillars
+    // and wires are span-borne and keep the height their span gave them
+    if (Math.abs(p.position.length() - before[i]) > 0.05) continue
+    const after = terrainRadius(_reseatV.copy(p.position).normalize())
+    if (Math.abs(after - before[i]) < 1e-9) continue
+    p.position.setLength(after)
+    _padReseats++
+  }
+  // and afterwards: how level the pad actually came out, and how much earth
+  // had to move to get there
+  for (let i = 0; i < _builtRefs.length; i++) {
+    const b = _builtRefs[i]
+    const q = b.prop.quaternion as THREE.Quaternion
+    const rel = rectRelief(b.prop.position, q, b.hl, b.hd)
+    const row = _zoneBuilt[b.row]
+    if (!row) continue
+    row.reliefAfter = rel.drop
+    row.cutFill = Math.max(
+      Math.abs(rel.lo - beforeRel[i].lo),
+      Math.abs(rel.hi - beforeRel[i].hi),
+    )
+    // the model's base plane is its own origin; the gap is the worst distance
+    // from that plane to the finished ground anywhere under the footprint
+    const base = b.prop.position.length()
+    row.plinthDepth = Math.max(base - rel.lo, rel.hi - base)
+  }
+}
+let _padReseats = 0
+export function padReseatCount() {
+  return _padReseats
 }
 
 /* ------------------------------------------------------------ workstations */
@@ -2126,264 +2188,1416 @@ export const GLB_BUILDINGS: GlbBuildingSpec[] = [
 
 /* ------------------------------------------------------- zone build-out */
 
+const M = "/models/"
+/** the player, for the "how many of me is that building" rule */
+export const PLAYER_H = 1.8
+
 /**
- * What stands in each zone, from WORLD_DESIGN's character for that place.
+ * One entry per source model.
  *
- * `tints` is the point of the table: the library is small, so the SAME model
- * is reused across and within zones and told apart by colour. Each placement
- * takes the next tint in the list, so no two copies of a model in a zone can
- * come out the same, and a shopfront row at KR Market never matches one on
- * SP Road.
+ * `src` is the model's WORLD-space bounding box as three.js loads it — node
+ * rotations included, which matters: the Quaternius and J-Toastie exports
+ * carry a -90 deg X on their root, so "Building Red Corner" is a 3.47u tower
+ * and not the 1.34u shed its raw vertex bounds suggest.
+ *
+ * `scale` is then chosen so the thing stands OVER the player rather than
+ * beside his knee. Everything without `low` clears 5u — 2.8 player-heights.
  */
-type ZoneBuild = {
+export type ModelSpec = {
   path: string
-  /** mesh-name prefix, for the multi-object files */
+  /** mesh-name prefix, for the multi-object files (the five palms) */
   part?: string
-  count: number
+  /** world-space source size [w, h, d] at scale 1 */
+  src: [number, number, number]
   scale: number
-  /** collision half-extents and height, in MODEL units */
-  box: { hx: number; hz: number; top: number }
-  tints: string[]
-  /** how much clear ground this needs around its centre */
-  radius: number
+  /** deliberately short: shelters, seating, walls, cars, paving, steps */
+  low?: boolean
   /** trees and street pieces stand on soil, not on a foundation slab */
   plinth?: boolean
+  /** local +Z runs ALONG the frontage line instead of facing it (vehicles) */
+  faceAlong?: boolean
+  /** collider half-extents in MODEL units, when the bbox lies (palm fronds) */
+  hx?: number
+  hz?: number
+  /**
+   * Does this want its ground graded level? Buildings do -- a plumb wall on a
+   * hillside reads as a lean. Trees, benches, cars and paving do NOT: they sit
+   * on whatever the ground is doing, and giving each of them a pad put flat
+   * discs at different levels next to each other, which plotGrade resolves
+   * "nearest wins" -- a hard 5u step right under a palm.
+   */
+  pad?: boolean
 }
 
-const M = "/models/"
+export const MODELS: Record<string, ModelSpec> = {
+  /* --- buildings ------------------------------------------------------- */
+  "shopfront-long": { path: `${M}Hotel Building.glb`, src: [6.951, 2.394, 2.837], scale: 2.15 },
+  "shopfront-row": { path: `${M}deco-shopfront-row.glb`, src: [8.2, 5.27, 5.23], scale: 1.35 },
+  "general-store": { path: `${M}bld-general-store-01.glb`, src: [3.42, 3.16, 3.77], scale: 1.9 },
+  "corner-store": { path: `${M}corner-store-01.glb`, src: [6.56, 6.2, 7.05], scale: 1.15 },
+  bungalow: { path: `${M}bungalow-house.glb`, src: [5.96, 5.09, 5.525], scale: 1.25 },
+  shack: { path: `${M}bait-shack.glb`, src: [2.74, 3.463, 3.118], scale: 1.7 },
+  shed: { path: `${M}big-red-barn.glb`, src: [8.92, 5.4, 7.798], scale: 1.0 },
+  "apartments-narrow": { path: `${M}apartments2.glb`, src: [2.007, 3.05, 2.0], scale: 2.5 },
+  midrise: { path: `${M}deco-hotel-three-bay.glb`, src: [7.44, 11.26, 6.24], scale: 0.78 },
+  "corner-tower": {
+    path: `${M}Building Red Corner by J-Toastie - 9JuFwnivP0.glb`,
+    src: [1.328, 3.465, 1.34],
+    scale: 2.1,
+  },
+  "neon-blade": { path: `${M}hotel-neon-blade.glb`, src: [1.34, 6.484, 0.98], scale: 1.15 },
+  workshop: { path: `${M}Big Building by Quaternius.glb`, src: [4.705, 5.677, 4.391], scale: 1.3 },
+  stoop: { path: `${M}Autumn Stoop_door.glb`, src: [1.491, 2.145, 1.114], scale: 2.6 },
+  palace: { path: `${M}palace_.glb`, src: [29.085, 22.716, 38.855], scale: 0.4 },
 
-export const ZONE_BUILDINGS: Record<string, ZoneBuild[]> = {
-  // KR Market — the densest place on the planet: shopfronts, stores, stalls
+  /* --- trees ----------------------------------------------------------- */
+  palm1: {
+    pad: false,
+    path: `${M}Palm Trees by Quaternius - VYslw9DEi6.glb`, part: "PalmTree_1",
+    src: [5.092, 5.103, 4.947], scale: 1.3, plinth: false, hx: 0.4, hz: 0.4,
+  },
+  palm2: {
+    pad: false,
+    path: `${M}Palm Trees by Quaternius - VYslw9DEi6.glb`, part: "PalmTree_2",
+    src: [5.583, 5.28, 4.769], scale: 1.25, plinth: false, hx: 0.4, hz: 0.4,
+  },
+  palm3: {
+    pad: false,
+    path: `${M}Palm Trees by Quaternius - VYslw9DEi6.glb`, part: "PalmTree_3",
+    src: [4.473, 4.666, 4.222], scale: 1.4, plinth: false, hx: 0.4, hz: 0.4,
+  },
+  palm4: {
+    pad: false,
+    path: `${M}Palm Trees by Quaternius - VYslw9DEi6.glb`, part: "PalmTree_4",
+    src: [4.747, 3.65, 4.952], scale: 1.75, plinth: false, hx: 0.4, hz: 0.4,
+  },
+  palm5: {
+    pad: false,
+    path: `${M}Palm Trees by Quaternius - VYslw9DEi6.glb`, part: "PalmTree_5",
+    src: [3.492, 1.796, 3.622], scale: 3.0, plinth: false, hx: 0.4, hz: 0.4,
+  },
+  /* the one conifer on the planet, clipped and columnar, and only because the
+     real Bengaluru Palace grounds are lined with exactly this shape */
+  cypress: {
+    pad: false,
+    path: `${M}arborvitae_conifer.glb`, src: [1.645, 3.325, 1.864], scale: 1.7,
+    plinth: false, hx: 0.45, hz: 0.45,
+  },
+
+  /* --- deliberately low ------------------------------------------------ */
+  stairs: { path: `${M}Stairs.glb`, src: [1.875, 1.392, 3.115], scale: 1.6, low: true, plinth: false, pad: false },
+  wall: {
+    path: `${M}Stone Wall by Quaternius - tdeAOh3LQV.glb`, src: [1.56, 0.446, 0.247],
+    scale: 3.6, low: true, plinth: false, pad: false,
+  },
+  gatepost: {
+    path: `${M}Fence End by J-Toastie - tQ5zhPd5UC.glb`, src: [1.352, 0.788, 0.286],
+    scale: 2.0, low: true, plinth: false, pad: false,
+  },
+  paving: {
+    path: `${M}Path Straight by Quaternius - ZuRHRsKWoz.glb`, src: [0.496, 0.045, 0.978],
+    scale: 4.0, low: true, plinth: false, pad: false,
+  },
+  bench: { path: `${M}bench-01.glb`, src: [1.4, 0.952, 0.475], scale: 1.0, low: true, plinth: false, pad: false },
+  "cafe-set": {
+    path: `${M}cafe-table-chairs.glb`, src: [1.8, 0.871, 0.846], scale: 1.0,
+    low: true, plinth: false,
+  },
+  wagon: {
+    path: `${M}container-flat-wagon.glb`, src: [1.25, 1.388, 3.635], scale: 1.2,
+    low: true, plinth: false, faceAlong: true, pad: false,
+  },
+  sedan: {
+    path: `${M}car-sedan-01.glb`, src: [1.157, 0.809, 2.938], scale: 1.0,
+    low: true, plinth: false, faceAlong: true, pad: false,
+  },
+  "police-car": {
+    path: `${M}Police Car.glb`, src: [1.778, 1.239, 3.73], scale: 1.0,
+    low: true, plinth: false, faceAlong: true, pad: false,
+  },
+  "sports-car": {
+    path: `${M}sports_car.glb`, src: [1.872, 1.203, 3.927], scale: 1.0,
+    low: true, plinth: false, faceAlong: true, pad: false,
+  },
+  "broken-car": {
+    path: `${M}Broken Car for garage.glb`, src: [2.641, 1.76, 5.494], scale: 1.0,
+    low: true, plinth: false, faceAlong: true, pad: false,
+  },
+  "work-bench": {
+    path: `${M}Bench for garage.glb`, src: [2.511, 1.621, 1.225], scale: 1.0,
+    low: true, plinth: false, pad: false,
+  },
+}
+
+/** height above its own pad, world units */
+export const modelH = (m: ModelSpec) => m.src[1] * m.scale
+/**
+ * Footprint half-sizes along and across a frontage line.
+ *
+ * `hx`/`hz` win where given: a palm's bounding box is its frond spread, and
+ * grading a 6.6u disc flat under every palm cut up to 8.1u of hillside for a
+ * tree that occupies a 0.8u trunk. Fronds overhang; they do not need a pad.
+ */
+const alongHalf = (m: ModelSpec) =>
+  (m.faceAlong ? (m.hz ?? m.src[2] / 2) : (m.hx ?? m.src[0] / 2)) * m.scale
+const acrossHalf = (m: ModelSpec) =>
+  (m.faceAlong ? (m.hx ?? m.src[0] / 2) : (m.hz ?? m.src[2] / 2)) * m.scale
+/** collider box, in MODEL units — the prop carries its own scale */
+const modelBox = (m: ModelSpec) => ({
+  hx: m.hx ?? m.src[0] / 2,
+  hz: m.hz ?? m.src[2] / 2,
+  top: m.src[1],
+})
+/**
+ * Smallest distance from the corridor centreline a FRONTAGE LINE may sit at.
+ *
+ * A pad's grading reaches `hz + 0.9 + PLOT_GRADE_RAMP` from the facade, and
+ * the widest the drawn shoulder ever gets is 6.75u, so 0.9 + 3 + 6.9 = 10.8u
+ * is the closest a facade can stand without its earthworks pulling the road
+ * surface toward the plot level -- which would undo the road repairs of
+ * P46-P54. Comes out at 12.5u. Measured afterwards; see the road-untouched
+ * check, which reports 0 road probes inside any pad.
+ */
+/**
+ * Widest the drawn shoulder ever gets (6.75u) plus margin.
+ *
+ * The margin is not decoration: arterialDistance is loopAngle x terrainRadius,
+ * and a pad's own grading LOWERS terrainRadius under it, so a pad measured at
+ * exactly 6.9u before grading came out at 5.40u after (measured). 8.6u of
+ * pre-grading clearance holds the post-grading figure above the shoulder.
+ */
+const ROAD_KEEPOUT = 9.0
+const SETBACK_FLOOR = 1.0 + PLOT_GRADE_RAMP + ROAD_KEEPOUT
+
+/**
+ * A street: an arc running parallel to the arterial at a FIXED setback, with
+ * its buildings sitting on it at even spacing and every facade square to it.
+ *
+ * The spiral search this replaced dropped buildings at whatever bearing
+ * happened to pass its tests, which is why the zones read as a scatter rather
+ * than as places with streets.
+ */
+type Street = {
+  /** which side of the arterial the frontage stands on */
+  side: 1 | -1
+  /**
+   * Setback: distance from the corridor centreline to the FRONTAGE LINE
+   * itself -- the facade plane, not the building centres. Each building is
+   * then seated its own half-depth behind it, so a 6.8u-deep shopfront row
+   * and a 2.7u-deep tower still present the same street wall.
+   */
+  dist: number
+  /** clear gap between neighbours along the line — small is shoulder-to-shoulder */
+  gap: number
+  items: { model: string; tint: string }[]
+}
+
+export const ZONE_STREETS: Record<string, Street[]> = {
+  /* KR Market — the densest place on the planet. Both sides of the road,
+     shoulder to shoulder, so it reads as a market lane and not a clearing. */
   bazaar: [
-    { path: `${M}Hotel Building.glb`, count: 3, scale: 0.85, box: { hx: 3.5, hz: 1.4, top: 2.4 }, radius: 4.6,
-      tints: ["#e8d7b8", "#cfa98a", "#b8c6cf"] },
-    { path: `${M}deco-shopfront-row.glb`, count: 2, scale: 0.5, box: { hx: 4.1, hz: 2.6, top: 5.3 }, radius: 4.2,
-      tints: ["#d8b48a", "#9fb4a2"] },
-    { path: `${M}bld-general-store-01.glb`, count: 2, scale: 0.7, box: { hx: 1.7, hz: 1.9, top: 3.2 }, radius: 3.0,
-      tints: ["#c8543f", "#e0b350"] },
+    {
+      side: 1, dist: 9, gap: 0.8, items: [
+        { model: "general-store", tint: "#c8543f" },
+        { model: "apartments-narrow", tint: "#d9c08f" },
+        { model: "corner-tower", tint: "#d88a4a" },
+        { model: "general-store", tint: "#e0b350" },
+      ],
+    },
+    {
+      side: -1, dist: 9, gap: 0.8, items: [
+        { model: "shopfront-row", tint: "#d8b48a" },
+        { model: "stoop", tint: "#b8926a" },
+        { model: "corner-tower", tint: "#9fb4a2" },
+        { model: "apartments-narrow", tint: "#c47f5a" },
+        { model: "general-store", tint: "#b8563f" },
+      ],
+    },
+    // a back lane behind the market frontage -- KR Market is not one street
+    {
+      side: 1, dist: 18, gap: 1.0, items: [
+        { model: "shopfront-row", tint: "#c6a276" },
+        { model: "corner-store", tint: "#a8926a" },
+        { model: "corner-tower", tint: "#7f95a8" },
+        { model: "shack", tint: "#d0a869" },
+      ],
+    },
   ],
-  // SP Road — the electronics lane: narrow frontages, signage, one midrise
+  /* SP Road — a corridor, not an open space: narrow tall frontages tight to
+     the kerb on both sides, sign blades between them. */
   samadhi: [
-    { path: `${M}Hotel Building.glb`, count: 2, scale: 0.8, box: { hx: 3.5, hz: 1.4, top: 2.4 }, radius: 4.4,
-      tints: ["#8fa6b8", "#c3b393"] },
-    { path: `${M}Building Red Corner by J-Toastie - 9JuFwnivP0.glb`, count: 2, scale: 1.1, box: { hx: 0.7, hz: 1.8, top: 3.5 }, radius: 2.6,
-      tints: ["#b8563f", "#5f7f96"] },
-    { path: `${M}apartments2.glb`, count: 2, scale: 1.0, box: { hx: 1.0, hz: 1.0, top: 3.1 }, radius: 2.4,
-      tints: ["#c9b48f", "#93a3ad"] },
-    { path: `${M}hotel-neon-blade.glb`, count: 2, scale: 0.9, box: { hx: 0.7, hz: 0.5, top: 6.5 }, radius: 1.8,
-      tints: ["#e0533a", "#3fa3c8"] },
+    {
+      side: 1, dist: 8, gap: 0.5, items: [
+        { model: "corner-tower", tint: "#b8563f" },
+        { model: "corner-tower", tint: "#5f7f96" },
+        { model: "neon-blade", tint: "#e0533a" },
+        { model: "corner-tower", tint: "#c9a24a" },
+        { model: "apartments-narrow", tint: "#c9b48f" },
+      ],
+    },
+    {
+      side: -1, dist: 8, gap: 0.5, items: [
+        { model: "midrise", tint: "#8fa6b8" },
+        { model: "corner-tower", tint: "#6f8a5f" },
+        { model: "neon-blade", tint: "#3fa3c8" },
+        { model: "corner-tower", tint: "#a8566f" },
+        { model: "apartments-narrow", tint: "#93a3ad" },
+      ],
+    },
+    // the second rank of the electronics lane
+    {
+      side: -1, dist: 17, gap: 0.8, items: [
+        { model: "corner-tower", tint: "#4f7f96" },
+        { model: "apartments-narrow", tint: "#b8a07a" },
+        { model: "corner-tower", tint: "#96604f" },
+        { model: "neon-blade", tint: "#c8a83f" },
+        { model: "general-store", tint: "#7f8a6f" },
+      ],
+    },
   ],
-  // Binny Mills — weaving sheds, worker housing, goods on the siding
+  /* Binny Mills — repetition and scale: parallel shed rows one side, worker
+     housing and the goods siding on the other. */
   mill: [
-    { path: `${M}big-red-barn.glb`, count: 3, scale: 0.75, box: { hx: 4.4, hz: 3.9, top: 5.4 }, radius: 6.4,
-      tints: ["#8a8f93", "#9c7060", "#7f8a7a"] },
-    { path: `${M}bungalow-house.glb`, count: 2, scale: 0.65, box: { hx: 3.0, hz: 2.8, top: 5.1 }, radius: 4.4,
-      tints: ["#d6c8a8", "#b9a98c"] },
-    { path: `${M}container-flat-wagon.glb`, count: 2, scale: 1.0, box: { hx: 0.7, hz: 1.8, top: 1.4 }, radius: 2.6,
-      tints: ["#7a6a52", "#5f6f7a"], plinth: false },
+    {
+      side: -1, dist: 10.8, gap: 2.5, items: [
+        { model: "shed", tint: "#8a8f93" },
+        { model: "bungalow", tint: "#a89a80" },
+      ],
+    },
+    {
+      side: 1, dist: 10.8, gap: 2.5, items: [
+        { model: "shed", tint: "#7f8a7a" },
+        { model: "bungalow", tint: "#d6c8a8" },
+        { model: "bungalow", tint: "#b9a98c" },
+        { model: "wagon", tint: "#7a6a52" },
+        { model: "wagon", tint: "#5f6f7a" },
+      ],
+    },
+    // the mill's own frontage on the far side, set well back
+    {
+      side: -1, dist: 17, gap: 3.0, items: [
+        { model: "shed", tint: "#7a8288" },
+        { model: "bungalow", tint: "#c2b294" },
+        { model: "palm4", tint: "#568444" },
+      ],
+    },
   ],
-  // Bengaluru Palace — one grand building, boundary wall, mature grounds
-  haveli: [
-    { path: `${M}palace_.glb`, count: 1, scale: 0.32, box: { hx: 14.5, hz: 19.4, top: 22.7 }, radius: 6.0,
-      tints: ["#e2d6bb"] },
-    { path: `${M}arborvitae_conifer.glb`, count: 4, scale: 1.0, box: { hx: 0.8, hz: 0.9, top: 3.3 }, radius: 2.2,
-      tints: ["#4f7a44", "#3f6b3a", "#5a8a4e", "#456f40"], plinth: false },
-    { path: `${M}Stone Wall by Quaternius - tdeAOh3LQV.glb`, count: 6, scale: 1.6, box: { hx: 0.8, hz: 0.2, top: 0.2 },
-      radius: 1.6, tints: ["#c9c0ae"], plinth: false },
-  ],
-  // Nandi Betta — the climb is the point: steps, a hut, nothing crowding it
+  /* Nandi Betta — the climb is the point. Two shacks well apart at the foot;
+     the stairs up the hill are placeStairs() work. */
   temple: [
-    { path: `${M}Stairs.glb`, count: 3, scale: 1.4, box: { hx: 0.9, hz: 1.5, top: 1.4 }, radius: 2.6,
-      tints: ["#cfc4ae", "#c4b9a3", "#d6cbb5"], plinth: false },
-    { path: `${M}bait-shack.glb`, count: 1, scale: 0.8, box: { hx: 1.3, hz: 1.5, top: 3.5 }, radius: 2.8,
-      tints: ["#d8b06a"] },
+    {
+      side: -1, dist: 10.8, gap: 7, items: [
+        { model: "shack", tint: "#d8b06a" },
+        { model: "shack", tint: "#c8a05a" },
+        { model: "palm3", tint: "#4e7a36" },
+      ],
+    },
   ],
-  // Dodda Alada Mara — a park. No buildings at all, only palms and seating.
+  /* Dodda Alada Mara — a park. Palms along the far edge, seating near the
+     footpath. No buildings at all. */
   grove: [
-    { path: `${M}Palm Trees by Quaternius - VYslw9DEi6.glb`, part: "PalmTree_1", count: 2, scale: 1.0,
-      box: { hx: 0.5, hz: 0.5, top: 5.2 }, radius: 3.0, tints: ["#5c8a3f", "#4e7a36"], plinth: false },
-    { path: `${M}Palm Trees by Quaternius - VYslw9DEi6.glb`, part: "PalmTree_4", count: 2, scale: 1.1,
-      box: { hx: 0.5, hz: 0.5, top: 5.2 }, radius: 3.0, tints: ["#67965a", "#568444"], plinth: false },
-    { path: `${M}bench-01.glb`, count: 4, scale: 1.0, box: { hx: 0.7, hz: 0.3, top: 1.0 }, radius: 1.8,
-      tints: ["#8a6a4a", "#7a5f42", "#96775a", "#6f5638"], plinth: false },
-    { path: `${M}cafe-table-chairs.glb`, count: 2, scale: 1.0, box: { hx: 0.9, hz: 0.4, top: 0.9 }, radius: 2.0,
-      tints: ["#b8a68a", "#a2907a"], plinth: false },
+    {
+      side: 1, dist: 11.5, gap: 4, items: [
+        { model: "palm1", tint: "#5c8a3f" },
+        { model: "palm3", tint: "#4e7a36" },
+        { model: "palm2", tint: "#67965a" },
+        { model: "palm4", tint: "#568444" },
+        { model: "palm1", tint: "#6a9c5a" },
+        { model: "palm5", tint: "#4f7f44" },
+      ],
+    },
+    {
+      side: 1, dist: 8.5, gap: 4.5, items: [
+        { model: "bench", tint: "#8a6a4a" },
+        { model: "cafe-set", tint: "#b8a68a" },
+        { model: "bench", tint: "#7a5f42" },
+        { model: "cafe-set", tint: "#a2907a" },
+      ],
+    },
   ],
-  // Cauvery Riverside — stone steps to the water, a shrine hut, small houses
+  /* Cauvery Riverside — houses set back from the water; the descent itself is
+     placeStairs() work. */
   ghat: [
-    { path: `${M}Stairs.glb`, count: 4, scale: 1.5, box: { hx: 0.9, hz: 1.6, top: 1.4 }, radius: 2.8,
-      tints: ["#c4bba7", "#cfc6b0", "#b9b09c", "#c9c0aa"], plinth: false },
-    { path: `${M}bait-shack.glb`, count: 2, scale: 0.75, box: { hx: 1.3, hz: 1.5, top: 3.5 }, radius: 2.8,
-      tints: ["#c08a5a", "#a8926a"] },
-    { path: `${M}bungalow-house.glb`, count: 1, scale: 0.6, box: { hx: 3.0, hz: 2.8, top: 5.1 }, radius: 4.2,
-      tints: ["#cbb894"] },
+    {
+      side: -1, dist: 10.8, gap: 3, items: [
+        { model: "shack", tint: "#c08a5a" },
+        { model: "bungalow", tint: "#cbb894" },
+        { model: "shack", tint: "#a8926a" },
+        { model: "palm2", tint: "#5f9150" },
+      ],
+    },
   ],
-  // Gopal's Garage — a yard: dismantled vehicles, a bench, a shed
+  /* Gopal's Garage — one shed and a yard of dismantled two-wheelers. */
   workshop: [
-    { path: `${M}Broken Car for garage.glb`, count: 2, scale: 0.45, box: { hx: 1.3, hz: 0.9, top: 2.4 }, radius: 2.4,
-      tints: ["#8a5f4a", "#6a7a86"], plinth: false },
-    { path: `${M}car-sedan-01.glb`, count: 1, scale: 1.0, box: { hx: 0.6, hz: 1.5, top: 0.8 }, radius: 2.2,
-      tints: ["#4a6f8a"], plinth: false },
-    { path: `${M}Bench for garage.glb`, count: 1, scale: 1.0, box: { hx: 1.3, hz: 0.6, top: 1.6 }, radius: 2.0,
-      tints: ["#7a6a52"], plinth: false },
+    {
+      side: 1, dist: 10.8, gap: 1.6, items: [
+        { model: "workshop", tint: "#b0a08a" },
+        { model: "broken-car", tint: "#8a5f4a" },
+        { model: "broken-car", tint: "#6a7a86" },
+        { model: "work-bench", tint: "#7a6a52" },
+      ],
+    },
   ],
-  // Sampangi Kere — 6u² of buildable ground. Palms only, and few.
+  /* Sampangi Kere — a bund with palms along it, and nothing else. */
   beach: [
-    { path: `${M}Palm Trees by Quaternius - VYslw9DEi6.glb`, part: "PalmTree_2", count: 2, scale: 1.0,
-      box: { hx: 0.5, hz: 0.5, top: 5.2 }, radius: 2.6, tints: ["#5f9150", "#4f7f44"], plinth: false },
-    { path: `${M}Palm Trees by Quaternius - VYslw9DEi6.glb`, part: "PalmTree_5", count: 1, scale: 1.05,
-      box: { hx: 0.5, hz: 0.5, top: 5.2 }, radius: 2.6, tints: ["#6a9c5a"], plinth: false },
+    {
+      side: 1, dist: 10.8, gap: 4, items: [
+        { model: "palm2", tint: "#5f9150" },
+        { model: "palm4", tint: "#4f7f44" },
+        { model: "palm5", tint: "#6a9c5a" },
+        { model: "palm3", tint: "#568444" },
+        { model: "palm1", tint: "#67965a" },
+      ],
+    },
   ],
 }
 
-/** everything the build-out actually managed to stand up, for reporting */
+/** everything the build-out stood up, for reporting */
 export type ZonePlacement = {
   zone: string
+  line: number
   model: string
   tint: string
   /** world units from the corridor centreline */
   road: number
-  footprint: number
+  /** the street's authored setback, for comparison */
+  setback: number
+  /** height in world units */
+  height: number
+  /** degrees between this facade's normal and the frontage line's normal */
+  facade: number
+  /** arc position along the line, relative to the zone's own arc position */
+  along: number
+  /** how many grading discs this building registered */
+  chainN: number
+  /** ground drop across the footprint before pad grading */
+  reliefBefore: number
+  /** and after it -- this is what "graded level" has to mean */
+  reliefAfter: number
+  /** deepest cut or fill the grading made under this footprint */
+  cutFill: number
+  /** how far the finished ground is from the model's base plane */
+  plinthDepth: number
+  ok: boolean
 }
 let _zoneBuilt: ZonePlacement[] = []
 export function zoneBuildReport() {
   return _zoneBuilt
 }
+/** pads this pass wants graded level, handed to terrain.ts with the civic ones */
+export type BuildPad = { dir: THREE.Vector3; radius: number; level?: number }
+let _buildPads: BuildPad[] = []
+export function buildPadReport() {
+  return _buildPads
+}
+/** stairs, with the slope each one actually found */
+export type StairFit = {
+  where: string
+  /** the stair's own rise, world units */
+  rise: number
+  /** the terrain drop across its own footprint */
+  drop: number
+  /** vertical mismatch at the bottom step and at the top step */
+  bottom: number
+  top: number
+  ok: boolean
+}
+let _stairFits: StairFit[] = []
+export function stairReport() {
+  return _stairFits
+}
+/** the palace grounds, with the distances the layout came out at */
+let _palace: Record<string, number | string> = {}
+export function palaceReport() {
+  return _palace
+}
 
 /**
- * Fill the zones. Candidates are tried on a widening spiral from the zone
- * centre and accepted only on ground that is dry, gentle, clear of the
- * corridor, and clear of everything already standing — the same rules the
- * civic plots use, so a building can never land on a pad, a pillar, a
- * villager or another building.
+ * A point on a frontage line: `s` world units along the arterial from the
+ * zone's own arc position, pushed `dist` sideways onto the line.
  */
+function frontageAt(tz: number, R: number, s: number, side: number, dist: number) {
+  const t = tz + s / R
+  const cl = loopDirRaw(t, new THREE.Vector3())
+  const ahead = loopDirRaw(t + 0.004, new THREE.Vector3())
+  const fwd = ahead.clone().sub(cl)
+  fwd.addScaledVector(cl, -fwd.dot(cl))
+  if (fwd.lengthSq() < 1e-12) return null
+  fwd.normalize()
+  const right = new THREE.Vector3().crossVectors(fwd, cl).normalize()
+  const g0 = terrainRadius(cl)
+  const at = (k: number) =>
+    cl.clone().addScaledVector(right, (side * k) / g0).normalize()
+  // Pushing sideways by `dist` does NOT put the point `dist` from the road:
+  // on the inside of a bend the road curls back toward you, and a line asked
+  // for 12.5u came out anywhere from 7.6u to 14.2u (measured). Solve for the
+  // offset that gives the TRUE distance instead, so the frontage really is
+  // parallel to the arterial and its grading really does stay off the road.
+  let dir = at(dist)
+  if (arterialDistance(dir) < dist) {
+    let lo = dist
+    let hi = dist * 2.6 + 8
+    for (let i = 0; i < 20; i++) {
+      const mid = (lo + hi) / 2
+      if (arterialDistance(at(mid)) < dist) lo = mid
+      else hi = mid
+    }
+    dir = at(hi)
+    // the solve is not always possible: pushed far enough, a point can come
+    // back within reach of the NEXT leg of the loop and the distance stops
+    // rising. Say so rather than quietly returning a 7.6u "12.5u" setback.
+    if (arterialDistance(dir) < dist - 0.15) return null
+  }
+  return { dir, cl, fwd, right }
+}
+
+/**
+ * Unit tangent of a FRONTAGE LINE at arc position `s`, in the tangent plane at
+ * `at`. Taken from the line itself rather than from the road, because the
+ * offset line's bearing drifts from the road's once the sphere curves.
+ */
+function lineTangent(tz: number, R: number, s: number, side: number, dist: number, at: THREE.Vector3) {
+  const a = frontageAt(tz, R, s - 0.6, side, dist)
+  const b = frontageAt(tz, R, s + 0.6, side, dist)
+  if (!a || !b) return null
+  const v = b.dir.clone().sub(a.dir)
+  v.addScaledVector(at, -v.dot(at))
+  return v.lengthSq() < 1e-14 ? null : v.normalize()
+}
+
+/**
+ * Worst ground drop across a RECTANGULAR footprint, sampled on its own rim in
+ * its own frame. The circular version asked a 16.7 x 6.8u shopfront row about
+ * ground 10u out to either side, which it never actually stands on.
+ */
+function rectRelief(origin: THREE.Vector3, quat: THREE.Quaternion, hx: number, hz: number) {
+  let lo = Infinity
+  let hi = -Infinity
+  const v = new THREE.Vector3()
+  for (let i = 0; i <= 6; i++) {
+    for (let j = 0; j <= 6; j++) {
+      if (i > 0 && i < 6 && j > 0 && j < 6) continue
+      v.set((i / 3 - 1) * hx, 0, (j / 3 - 1) * hz).applyQuaternion(quat).add(origin)
+      const r = terrainRadius(v.normalize())
+      if (r < lo) lo = r
+      if (r > hi) hi = r
+    }
+  }
+  return { lo, hi, drop: hi - lo }
+}
+
+/**
+ * The grading pads for one building: a CHAIN of depth-sized discs down its
+ * own length, not one disc round its centre.
+ *
+ * A single disc big enough to cover a 16.7u frontage has a 9.9u radius, and
+ * with the 3u ramp its influence reaches 12.9u -- straight through the
+ * carriageway, which would drag the road surface to the plot level and break
+ * the very roads P46-P54 spent their time repairing. Depth-sized discs keep
+ * the whole influence inside `hd + 0.9 + PLOT_GRADE_RAMP` of the frontage.
+ */
+/**
+ * Disc radius and count for a footprint's grading chain.
+ *
+ * A disc of radius r covers the full DEPTH of the strip only within
+ * sqrt(r^2 - hz^2) of its own centre. Spacing on r instead left the corners of
+ * a 7.5 x 6.9u bungalow 0.73u outside the flat core, sitting in the ramp --
+ * which is where its 2.6u plinth came from.
+ */
+function padSpacing(hx: number, hz: number) {
+  const r = hz + 1.0
+  const half = Math.max(0.4, Math.sqrt(Math.max(0, r * r - hz * hz)))
+  return { r, n: Math.max(hx > half ? 2 : 1, Math.ceil(hx / half)) }
+}
+
+function padChain(origin: THREE.Vector3, quat: THREE.Quaternion, hx: number, hz: number) {
+  const { r, n: _n } = padSpacing(hx, hz)
+  const n = _n
+  const out: { dir: THREE.Vector3; radius: number; off: number }[] = []
+  const v = new THREE.Vector3()
+  for (let i = 0; i < n; i++) {
+    const x = n === 1 ? 0 : -hx + ((2 * hx) / (n - 1 || 1)) * i
+    v.set(x, 0, 0).applyQuaternion(quat).add(origin)
+    out.push({ dir: v.clone().normalize(), radius: r, off: x })
+  }
+  return out
+}
+
+/**
+ * Would this pad chain's grading reach the road?
+ *
+ * SETBACK_FLOOR guarantees it for the building's centre, but a chain end on
+ * the outside of a bend curls back toward the arterial -- measured at 4.23u
+ * from the centreline, inside the carriageway, which would have tilted the
+ * road toward the plot level.
+ */
+function padChainClearsRoad(chain: { dir: THREE.Vector3; radius: number }[]) {
+  for (const q of chain) {
+    if (arterialDistance(q.dir) - q.radius - PLOT_GRADE_RAMP < ROAD_KEEPOUT) return false
+  }
+  return true
+}
+/** worst ground drop across a footprint, sampled on its own rim */
+function padRelief(dir: THREE.Vector3, radius: number) {
+  const g = terrainRadius(dir)
+  const t1 = Math.abs(dir.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)
+  const u = new THREE.Vector3().crossVectors(t1, dir).normalize()
+  const v = new THREE.Vector3().crossVectors(dir, u).normalize()
+  let lo = g
+  let hi = g
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2
+    const d = dir
+      .clone()
+      .addScaledVector(u, (Math.cos(a) * radius) / g)
+      .addScaledVector(v, (Math.sin(a) * radius) / g)
+      .normalize()
+    const r = terrainRadius(d)
+    if (r < lo) lo = r
+    if (r > hi) hi = r
+  }
+  return { level: g, lo, hi, drop: hi - lo }
+}
+
+/**
+ * Kinds a building plot may overlap. Bridge and metro geometry is span-borne
+ * or sits inside the corridor band the setback has already cleared, and a
+ * guardrail lives on the shoulder — none of them are things a shopfront can
+ * be standing "on".
+ */
+const PLOT_IGNORE = new Set<PropKind>([
+  "bridge-rail", "bridge-deck", "bridge-pier", "metro-track", "wire", "guardrail",
+])
+/** verge scatter: cleared off the plot rather than blocking it */
+const PLOT_SCATTER = new Set<PropKind>(["grass-tuft", "mango-tree", "peepal-tree"])
+
+const _fpV = new THREE.Vector3()
+/**
+ * Is the ground under this footprint clear, and what scatter has to go?
+ *
+ * A circle round the centre is the wrong test for a 16u shopfront row: it
+ * demands a 20u clearing for a building only 6.8u deep, which is why every
+ * dense frontage came back NO ROOM. This projects each nearby prop into the
+ * building's OWN frame and tests the rectangle instead — which is also what
+ * lets a market street stand shoulder to shoulder.
+ *
+ * Returns the scatter to sweep, or null if something solid is in the way.
+ */
+function footprintFree(
+  origin: THREE.Vector3,
+  quat: THREE.Quaternion,
+  hx: number,
+  hz: number,
+  props: PlacedProp[],
+) {
+  const inv = quat.clone().invert()
+  const reach = Math.hypot(hx, hz) + 3.2
+  const sweep: PlacedProp[] = []
+  for (const p of props) {
+    if (PLOT_IGNORE.has(p.kind)) continue
+    if (p.position.distanceTo(origin) > reach) continue
+    _fpV.copy(p.position).sub(origin).applyQuaternion(inv)
+    const scatter = PLOT_SCATTER.has(p.kind)
+    const own = scatter ? 0.3 : BULKY_KINDS.has(p.kind) ? 1.9 : 0.9
+    if (Math.abs(_fpV.x) < hx + own && Math.abs(_fpV.z) < hz + own) {
+      if (!scatter) return null
+      sweep.push(p)
+    }
+  }
+  return sweep
+}
+
+/** does any part of this footprint lie on a drawn road surface? */
+function footprintOffRoad(
+  origin: THREE.Vector3,
+  quat: THREE.Quaternion,
+  hx: number,
+  hz: number,
+) {
+  const v = new THREE.Vector3()
+  for (let i = 0; i <= 4; i++) {
+    for (let j = 0; j <= 4; j++) {
+      v.set((i / 2 - 1) * hx, 0, (j / 2 - 1) * hz).applyQuaternion(quat).add(origin)
+      if (corridorSurface(v.normalize()) !== null) return false
+    }
+  }
+  return true
+}
+
+/** is any villager standing inside this footprint? */
+function footprintFreeOfNpcs(
+  origin: THREE.Vector3,
+  quat: THREE.Quaternion,
+  hx: number,
+  hz: number,
+) {
+  const inv = quat.clone().invert()
+  for (const p of npcSpots()) {
+    _fpV.copy(p).sub(origin).applyQuaternion(inv)
+    if (Math.abs(_fpV.x) < hx + 1.9 && Math.abs(_fpV.z) < hz + 1.9) return false
+  }
+  return true
+}
+
+/** drop props off a plot, in place */
+function sweepScatter(props: PlacedProp[], gone: PlacedProp[]) {
+  for (const g of gone) {
+    const i = props.indexOf(g)
+    if (i >= 0) props.splice(i, 1)
+  }
+  _sweptScatter += gone.length
+}
+let _sweptScatter = 0
+export function sweptScatterCount() {
+  return _sweptScatter
+}
+
+/** smallest distance from a world point to any villager spawn */
+function npcNearest(at: THREE.Vector3) {
+  let n = Infinity
+  for (const p of npcSpots()) n = Math.min(n, at.distanceTo(p))
+  return n
+}
+
+/**
+ * Stand the zones up along their frontage lines.
+ *
+ * Everything on one line shares its setback and its facing; a slot that will
+ * not take a building slides ALONG the line rather than off it, so the street
+ * survives even where the ground does not.
+ */
+/** placed buildings, kept so the grading pass can measure what it did to them */
+let _builtRefs: { row: number; prop: PlacedProp; hl: number; hd: number }[] = []
+
 function placeZoneBuildings(props: PlacedProp[]) {
   const report: ZonePlacement[] = []
-  const taken: { at: THREE.Vector3; r: number }[] = []
+  const pads: BuildPad[] = []
+  /**
+   * Every graded pad on the planet, civic ones included, with the level it
+   * grades to. plotGrade resolves overlaps "nearest wins", so two pads whose
+   * influence overlaps at different levels put a hard step between them --
+   * measured at 2.82u under three SP Road frontages, where a back-lane pad
+   * 4.2u further out reached across the front rank. Pads may therefore only
+   * overlap when they agree on height.
+   */
+  const allPads: { dir: THREE.Vector3; radius: number; level: number }[] = _plotSiting
+    .filter((q) => q.ok)
+    .map((q) => ({ dir: q.dir.clone(), radius: q.radius, level: terrainRadius(q.dir) }))
+  _builtRefs = []
+  _terraces = []
+  _sweptScatter = 0
   let seed = 9600
 
   for (const zone of ZONES) {
-    const specs = ZONE_BUILDINGS[zone.id]
-    if (!specs) continue
+    const streets = ZONE_STREETS[zone.id]
+    if (!streets) continue
     const c = new THREE.Vector3(...zone.center).normalize()
-    const R0 = terrainRadius(c)
-    const t1 = Math.abs(c.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)
-    const u = new THREE.Vector3().crossVectors(t1, c).normalize()
-    const v = new THREE.Vector3().crossVectors(c, u).normalize()
+    const R = terrainRadius(c)
+    const tz = nearestLoopT(c)
 
-    for (const spec of specs) {
-      for (let k = 0; k < spec.count; k++) {
-        let placed = false
-        // widening spiral: near the centre first, out to the zone edge
-        for (let ring = 1; ring <= 26 && !placed; ring++) {
-          const rad = (ring / 26) * (zone.radius + 6)
-          const steps = 8 + ring * 4
-          const phase = (k * 2.399 + ring * 0.7) % (Math.PI * 2)
-          for (let s = 0; s < steps && !placed; s++) {
-            const a = phase + (s / steps) * Math.PI * 2
-            const dir = c
-              .clone()
-              .addScaledVector(u, (Math.cos(a) * rad) / R0)
-              .addScaledVector(v, (Math.sin(a) * rad) / R0)
-              .normalize()
-            const g = terrainRadius(dir)
-            if (g < WATER_LEVEL + 0.8) continue
-            if (slopeAt(dir, g) > 0.40) continue
-            // never inside the road corridor or its suppression band
-            if (arterialDistance(dir) < CORRIDOR_SUPPRESS) continue
-            const at = dir.clone().multiplyScalar(g)
-            // clear of everything already standing, including this pass
-            if (propClearance(at, props).nearest < spec.radius) continue
-            if (!npcClearance(at).ok) continue
-            let clash = false
-            for (const t of taken) {
-              if (t.at.distanceTo(at) < t.r + spec.radius) {
-                clash = true
-                break
-              }
+    for (let li = 0; li < streets.length; li++) {
+      const st = streets[li]
+      // centre the whole run on the zone's own arc position
+      let run = st.gap * Math.max(0, st.items.length - 1)
+      for (const it of st.items) run += 2 * alongHalf(MODELS[it.model])
+      let cursor = -run / 2
+      const linePads: (BuildPad & { level: number; along: number })[] = []
+      /** the last building accepted on this line, so the terrace can continue */
+      let prevOn: { along: number; level: number; reach: number } | null = null
+
+      for (const it of st.items) {
+        const m = MODELS[it.model]
+        const hl = alongHalf(m)
+        const hd = acrossHalf(m)
+        type Hit = {
+          s: number
+          f: NonNullable<ReturnType<typeof frontageAt>>
+          relief: number
+          quat: THREE.Quaternion
+          toward: THREE.Vector3
+          sweep: PlacedProp[]
+          lineFwd: THREE.Vector3
+          chain: { dir: THREE.Vector3; radius: number; off: number }[]
+        }
+        let hit: Hit | null = null
+
+        // Slide ALONG the line, never off it -- and both ways, so a building
+        // blocked by an existing stall can back up as well as advance.
+        for (let a = 0; a < 41 && !hit; a++) {
+          _rej.tried++
+          const off = a === 0 ? 0 : (a & 1 ? 1 : -1) * Math.ceil(a / 2) * 1.4
+          const s = cursor + hl + off
+          // the LINE is the facade; the centre sits its own half-depth behind.
+          // SETBACK_FLOOR keeps every pad's grading ramp off the carriageway.
+          const centreDist = Math.max(st.dist, SETBACK_FLOOR) + hd
+          const f = frontageAt(tz, R, s, st.side, centreDist)
+          if (!f) continue
+          const g = terrainRadius(f.dir)
+          if (g < WATER_LEVEL + 1.0) { _rej.wet++; continue }
+          // the near FACE, not the centre, must clear the corridor band
+          if (arterialDistance(f.dir) < CORRIDOR_SUPPRESS + hd) { _rej.corridor++; continue }
+          if (slopeAt(f.dir, g) > 0.7) { _rej.slope++; continue }
+          // Square to the LINE, measured on the line itself. Aiming at the
+          // centreline point instead leaves 11-16 deg of error, because the
+          // line's own tangent is not the road's tangent once it has been
+          // pushed sideways across a curving sphere.
+          const lf = lineTangent(tz, R, s, st.side, centreDist, f.dir)
+          if (!lf) continue
+          // roadward normal of the line, in the tangent plane at f.dir
+          const inward = new THREE.Vector3().crossVectors(lf, f.dir).normalize()
+          if (inward.dot(f.right) * st.side > 0) inward.negate()
+          const toward = m.faceAlong ? lf.clone() : inward
+          const spin = spinAlong(f.dir, new THREE.Vector3().crossVectors(f.dir, toward))
+          const quat = surfaceQuaternion(f.dir, spin)
+          const at = f.dir.clone().multiplyScalar(g)
+          // grading a pad is fine; carving a hillside is not
+          const rel = rectRelief(at, quat, hl, hd)
+          if (rel.drop > 4.2) { _rej.relief++; continue }
+          // The whole FOOTPRINT must be dry, not just the centre. Terrain
+          // grading is skipped below WATER_LEVEL + 0.48 on purpose (a graded
+          // bank would cut dry land under the waterline), so a corner hanging
+          // over the shore never gets levelled -- that is exactly where the
+          // 2.69u plinth at the ghat came from.
+          if (rel.lo < WATER_LEVEL + 0.9) { _rej.wet++; continue }
+          if (!footprintOffRoad(at, quat, hl, hd)) { _rej.corridor++; continue }
+          // The chain is stepped off the accepted centre in the building's own
+          // frame. Re-solving each disc's position on the frontage line looked
+          // tidier but the true-distance solve is not continuous in s, so a
+          // disc could land 8u from the building it was meant to level --
+          // measured: a general store keeping a 2.18u plinth while its own two
+          // pads sat somewhere else entirely.
+          const chain = padChain(at, quat, hl, hd)
+          if (!padChainClearsRoad(chain)) { _rej.corridor++; continue }
+          const sweep = footprintFree(at, quat, hl, hd, props)
+          if (!sweep) { _rej.props++; continue }
+          if (!footprintFreeOfNpcs(at, quat, hl, hd)) { _rej.npc++; continue }
+          // pads may abut along a line -- that IS a terrace -- but must not
+          // reach into a civic plot, which grades to its own level
+          let clash = false
+          for (const q of _plotSiting) {
+            if (!q.ok) continue
+            if (q.dir.angleTo(f.dir) * g < q.radius + Math.hypot(hl, hd) + 0.9) {
+              clash = true
+              break
             }
-            if (clash) continue
-
-            // face the road when there is one within reach, else the zone centre
-            const roadDir = loopDirRaw(nearestLoopT(dir), new THREE.Vector3())
-            const near = arterialDistance(dir) < 16
-            const toward = arcTangent(dir, near ? roadDir : c)
-            const spin = toward
-              ? spinAlong(dir, new THREE.Vector3().crossVectors(dir, toward))
-              : 0
-            const tint = spec.tints[k % spec.tints.length]
-            props.push({
-              kind: "glb-building",
-              position: at,
-              quaternion: surfaceQuaternion(dir, spin),
-              scale: spec.scale,
-              colorA: tint,
-              colorB: tint,
-              seed: seed++,
-              modelPath: spec.path,
-              part: spec.part,
-              tint,
-              plinth: spec.plinth,
-              box: spec.box,
-            })
-            taken.push({ at, r: spec.radius })
-            report.push({
-              zone: zone.id,
-              model: spec.path.split("/").pop()!.replace(/\.glb$/, "") + (spec.part ? `:${spec.part}` : ""),
-              tint,
-              road: arterialDistance(dir),
-              footprint: Math.PI * spec.radius * spec.radius,
-            })
-            placed = true
           }
+          if (clash) { _rej.plot++; continue }
+          // A neighbour close enough to share a terrace must be close enough
+          // in HEIGHT too. Otherwise the two pads abut at different levels and
+          // plotGrade's nearest-wins rule puts a 5u step between them.
+          if (
+            m.pad !== false &&
+            prevOn &&
+            s - prevOn.along < prevOn.reach + hl + hd + 3.9 &&
+            Math.abs(g - prevOn.level) > 0.9
+          ) {
+            _rej.relief++
+            continue
+          }
+          if (m.pad !== false) {
+            let stepped = false
+            for (const q of chain) {
+              for (const e of allPads) {
+                if (Math.abs(e.level - g) <= 0.9) continue
+                if (e.dir.angleTo(q.dir) * g < e.radius + q.radius + PLOT_GRADE_RAMP) {
+                  stepped = true
+                  break
+                }
+              }
+              if (stepped) break
+            }
+            if (stepped) { _rej.plot++; continue }
+          }
+          hit = { s, f, relief: rel.drop, quat, toward, sweep, lineFwd: lf, chain }
         }
-        if (!placed) {
+
+        if (!hit) {
           report.push({
-            zone: zone.id,
-            model: spec.path.split("/").pop()!.replace(/\.glb$/, "") + (spec.part ? `:${spec.part}` : "") + " [NO ROOM]",
-            tint: "-",
-            road: NaN,
-            footprint: 0,
+            zone: zone.id, line: li, model: it.model, tint: it.tint, road: NaN,
+            setback: st.dist, height: modelH(m), facade: NaN, along: NaN,
+            chainN: 0, reliefBefore: NaN, reliefAfter: NaN, cutFill: NaN, plinthDepth: NaN,
+            ok: false,
           })
+          cursor += 2 * hl + st.gap
+          continue
         }
+
+        const { dir } = hit.f
+        const g = terrainRadius(dir)
+        const at = dir.clone().multiplyScalar(g)
+        sweepScatter(props, hit.sweep)
+        props.push({
+          kind: "glb-building",
+          position: at,
+          quaternion: hit.quat,
+          scale: m.scale,
+          colorA: it.tint,
+          colorB: it.tint,
+          seed: seed++,
+          modelPath: m.path,
+          part: m.part,
+          tint: it.tint,
+          plinth: m.plinth,
+          box: modelBox(m),
+        })
+        if (m.pad !== false) {
+          prevOn = { along: hit.s, level: g, reach: hl + hd + 0.9 }
+          for (const q of hit.chain) allPads.push({ dir: q.dir, radius: q.radius, level: g })
+        }
+        if (m.pad !== false)
+        for (const q of hit.chain) {
+          linePads.push({ dir: q.dir, radius: q.radius, level: g, along: hit.s + q.off })
+        }
+        // the facade normal AS BUILT, against the line's own tangent: 90 deg
+        // apart is square to the line
+        const builtZ = new THREE.Vector3(0, 0, 1).applyQuaternion(hit.quat)
+        const ang = (Math.acos(Math.min(1, Math.max(-1, builtZ.dot(hit.lineFwd)))) * 180) / Math.PI
+        report.push({
+          zone: zone.id, line: li, model: it.model, tint: it.tint,
+          // where this building's own FACADE lands, for comparing to setback
+          road: arterialDistance(dir) - hd, setback: st.dist, height: modelH(m),
+          // square to the line means the facade normal is 90 deg off its
+          // tangent; a vehicle is deliberately parallel to it instead
+          facade: m.faceAlong ? Math.abs(ang) : Math.abs(90 - ang),
+          along: hit.s, chainN: m.pad === false ? 0 : hit.chain.length,
+          reliefBefore: hit.relief, reliefAfter: NaN, cutFill: NaN,
+          plinthDepth: NaN, ok: true,
+        })
+        _builtRefs.push({ row: report.length - 1, prop: props[props.length - 1], hl, hd })
+        cursor = hit.s + hl + st.gap
+      }
+
+      // one terrace per line: every pad on it grades to the SAME level, so a
+      // shoulder-to-shoulder row comes out as one continuous frontage instead
+      // of a staircase of separate slabs
+      // Only NEIGHBOURS share a level. Levelling a whole line together forced
+      // an 8.8u cut where two members sat 50u apart on different ground; a
+      // terrace is a run of adjoining plots, and a gap in the frontage is
+      // where one terrace ends and the next begins.
+      const runs: (typeof linePads)[] = []
+      const sortedPads = [...linePads].sort((x, y) => x.along - y.along)
+      for (const q of sortedPads) {
+        const last = runs[runs.length - 1]
+        const prev = last?.[last.length - 1]
+        // adjoining AND at much the same height. Adjacency alone let a run
+        // span 5.3u of hillside, and one shared level then cut 5.5u under its
+        // far end and buried that building 2.8u deep in its own plinth.
+        const near = prev && q.along - prev.along <= prev.radius + q.radius + 3
+        const level = prev && Math.abs(q.level - prev.level) <= 0.9
+        if (near && level) last.push(q)
+        else runs.push([q])
+      }
+      for (const run of runs) {
+        const levels = run.map((q) => q.level).sort((x, y) => x - y)
+        const level = levels[levels.length >> 1]
+        let worst = 0
+        for (const q of run) {
+          worst = Math.max(worst, Math.abs(q.level - level))
+          pads.push({ dir: q.dir, radius: q.radius, level })
+        }
+        _terraces.push({ zone: zone.id, line: li, level, n: run.length, spread: worst })
       }
     }
   }
   _zoneBuilt = report
-  placeRoadside(props)
+  _buildPads = pads
+}
+const _pput = { tried: 0, wet: 0, clear: 0, road: 0 }
+export function palacePutReport() {
+  return _pput
+}
+const _prej = { tried: 0, wet: 0, slope: 0, relief: 0, props: 0, npc: 0, plot: 0 }
+export function palaceRejectReport() {
+  return _prej
+}
+const _rej = { tried: 0, wet: 0, corridor: 0, slope: 0, relief: 0, props: 0, npc: 0, plot: 0 }
+export function rejectReport() {
+  return _rej
+}
+
+/** one entry per frontage line that got built, for reporting */
+export type Terrace = { zone: string; line: number; level: number; n: number; spread: number }
+let _terraces: Terrace[] = []
+export function terraceReport() {
+  return _terraces
 }
 
 /**
- * Parked vehicles and street furniture along the frontages. They sit just
+ * Bengaluru Palace and its grounds.
+ *
+ * The palace is the zone's CENTREPIECE, so it is sited by ring search out
+ * from the haveli centre rather than hung on a frontage line — the arterial
+ * was rerouted past the hubs in P54 and the zone centres are the open ground
+ * that reroute created. Everything else is then laid out on the approach
+ * axis: the great-circle line from the palace door to the nearest point of
+ * the road.
+ *
+ *      road ── gate gap in the boundary wall ── approach ── forecourt ── door
+ *                        cypresses and lamps flanking
+ *                     lawn between the wall and the palace face
+ */
+function placePalace(props: PlacedProp[]) {
+  const zone = ZONES.find((z) => z.id === "haveli")
+  if (!zone) return
+  const m = MODELS.palace
+  const c = new THREE.Vector3(...zone.center).normalize()
+  const R = terrainRadius(c)
+  const halfDepth = acrossHalf(m)
+  const halfWide = alongHalf(m)
+  const t1 = Math.abs(c.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)
+  const u0 = new THREE.Vector3().crossVectors(t1, c).normalize()
+  const v0 = new THREE.Vector3().crossVectors(c, u0).normalize()
+
+  let best: {
+    dir: THREE.Vector3
+    quat: THREE.Quaternion
+    axis: THREE.Vector3
+    sweep: PlacedProp[]
+    ring: number
+  } | null = null
+
+  // Graded passes: first insist on room for a real approach between the door
+  // and the road, then drop that, then allow the pad to be cut deeper. A
+  // palace with a 4u drive is not a palace, but no palace at all is worse.
+  const PASSES = [
+    { approach: 9, relief: 4.8 },
+    { approach: 0, relief: 4.8 },
+    { approach: 0, relief: 7.0 },
+  ]
+  let usedPass = -1
+  for (let pi = 0; pi < PASSES.length; pi++) {
+  if (best) break
+  const { approach: wantApproach, relief: maxRelief } = PASSES[pi]
+  usedPass = pi
+  for (let ring = 0; ring <= 46 && !best; ring++) {
+    const rr = ring * 0.7
+    const steps = ring === 0 ? 1 : 12 + ring * 3
+    for (let si = 0; si < steps && !best; si++) {
+      const ang = (si / steps) * Math.PI * 2
+      const dir = c
+        .clone()
+        .addScaledVector(u0, (Math.cos(ang) * rr) / R)
+        .addScaledVector(v0, (Math.sin(ang) * rr) / R)
+        .normalize()
+      _prej.tried++
+      const g = terrainRadius(dir)
+      if (g < WATER_LEVEL + 1.5) {
+        _prej.wet++
+        continue
+      }
+      if (slopeAt(dir, g) > 0.7) {
+        _prej.slope++
+        continue
+      }
+      // faces the road squarely: local +Z runs down the approach axis
+      const road = loopDirRaw(nearestLoopT(dir), new THREE.Vector3())
+      const axis = arcTangent(dir, road)
+      if (!axis) continue
+      const quat = surfaceQuaternion(
+        dir,
+        spinAlong(dir, new THREE.Vector3().crossVectors(dir, axis)),
+      )
+      const at = dir.clone().multiplyScalar(g)
+      // the front face must stand clear of the road, and no part of the
+      // footprint may lie on any drawn road surface
+      // same earthworks rule as SETBACK_FLOOR, but stated against the
+      // palace's own depth: its pad chain reaches halfDepth + 0.9 + ramp
+      if (arterialDistance(dir) < halfDepth + SETBACK_FLOOR + wantApproach) {
+        _prej.plot++
+        continue
+      }
+      if (!footprintOffRoad(at, quat, halfWide, halfDepth)) {
+        _prej.plot++
+        continue
+      }
+      if (!padChainClearsRoad(padChain(at, quat, halfWide, halfDepth))) {
+        _prej.plot++
+        continue
+      }
+      const prel = rectRelief(at, quat, halfWide, halfDepth)
+      if (prel.drop > maxRelief) {
+        _prej.relief++
+        continue
+      }
+      if (prel.lo < WATER_LEVEL + 0.9) {
+        _prej.wet++
+        continue
+      }
+      const sweep = footprintFree(at, quat, halfWide, halfDepth, props)
+      if (!sweep) {
+        _prej.props++
+        continue
+      }
+      if (!footprintFreeOfNpcs(at, quat, halfWide, halfDepth)) {
+        _prej.npc++
+        continue
+      }
+      best = { dir, quat, axis, sweep, ring }
+    }
+  }
+  }
+
+  if (!best) {
+    _palace = { sited: "NO ROOM" }
+    return
+  }
+
+  const { dir: pDir, quat: pQuat, axis } = best
+  sweepScatter(props, best.sweep)
+  const pG = terrainRadius(pDir)
+  const pAt = pDir.clone().multiplyScalar(pG)
+  let seed = 9700
+
+  props.push({
+    kind: "glb-building",
+    position: pAt,
+    quaternion: pQuat,
+    scale: m.scale,
+    colorA: "#e2d6bb",
+    colorB: "#e2d6bb",
+    seed: seed++,
+    modelPath: m.path,
+    tint: "#e2d6bb",
+    box: modelBox(m),
+  })
+  for (const q of padChain(pAt, pQuat, halfWide, halfDepth)) {
+    _buildPads.push({ dir: q.dir, radius: q.radius, level: pG })
+  }
+
+  /**
+   * A point on the grounds: `u` world units down the approach axis from the
+   * palace centre (toward the road), `v` across it.
+   */
+  const lateral = new THREE.Vector3().crossVectors(pDir, axis).normalize()
+  const ground = (u: number, v: number) =>
+    pDir
+      .clone()
+      .addScaledVector(axis, u / pG)
+      .addScaledVector(lateral, v / pG)
+      .normalize()
+
+  /** stand one GLB on the grounds, square to the approach */
+  const put = (u: number, v: number, spec: ModelSpec, tint: string, minClear: number, along = false) => {
+    const d = ground(u, v)
+    const gg = terrainRadius(d)
+    _pput.tried++
+    if (gg < WATER_LEVEL + 0.5) { _pput.wet++; return false }
+    const at = d.clone().multiplyScalar(gg)
+    if (minClear > 0) {
+      let near = Infinity
+      for (const q of props) {
+        // consecutive paving slabs are MEANT to touch; everything else is not
+        if (q.modelPath === spec.path) continue
+        if (q.kind === "wire" || PLOT_SCATTER.has(q.kind)) continue
+        near = Math.min(near, at.distanceTo(q.position))
+      }
+      if (near < minClear) { _pput.clear++; return false }
+    }
+    const ax = arcTangent(d, pDir.clone().addScaledVector(axis, 0.3))
+    const face = along ? new THREE.Vector3().crossVectors(d, ax ?? axis) : (ax ?? axis)
+    const q = surfaceQuaternion(d, spinAlong(d, new THREE.Vector3().crossVectors(d, face)))
+    // nothing on the grounds may overhang the carriageway, paving included
+    if (!footprintOffRoad(at, q, alongHalf(spec), acrossHalf(spec))) { _pput.road++; return false }
+    props.push({
+      kind: "glb-building",
+      position: at,
+      quaternion: q,
+      scale: spec.scale,
+      colorA: tint,
+      colorB: tint,
+      seed: seed++,
+      modelPath: spec.path,
+      part: spec.part,
+      tint,
+      plinth: spec.plinth,
+      box: modelBox(spec),
+    })
+    return true
+  }
+
+  const paving = MODELS.paving
+  const tileLen = paving.src[2] * paving.scale
+  const tileWide = paving.src[0] * paving.scale
+  const doorU = halfDepth
+
+  // how far down the axis the road is: walk out until the corridor is reached
+  let roadU = doorU
+  for (let u = doorU; u <= doorU + 60; u += 0.5) {
+    if (arterialDistance(ground(u, 0)) <= CORRIDOR_SUPPRESS + 0.4) break
+    roadU = u
+  }
+
+  // forecourt: two rows of three tiles right at the door
+  let laid = 0
+  for (let row = 0; row < 2; row++) {
+    for (let col = -1; col <= 1; col++) {
+      if (put(doorU + 0.4 + row * tileLen, col * tileWide, paving, "#cfc4ae", 1.3)) laid++
+    }
+  }
+  const courtOuter = doorU + 0.4 + 2 * tileLen
+
+  // approach: tiles from the forecourt out to the road
+  let approachEnd = courtOuter
+  for (let u = courtOuter + tileLen / 2; u <= roadU; u += tileLen) {
+    if (put(u, 0, paving, "#cfc4ae", 1.3)) {
+      laid++
+      approachEnd = u + tileLen / 2
+    }
+  }
+
+  // boundary wall across the frontage, with a gate gap on the approach axis
+  const wall = MODELS.wall
+  const segLen = wall.src[0] * wall.scale
+  const GATE_HALF = tileWide * 0.9
+  const wallU = Math.min(roadU - 1.0, courtOuter + (roadU - courtOuter) * 0.62)
+  let walls = 0
+  for (let k = -5; k <= 5; k++) {
+    const v = k * (segLen + 0.1)
+    if (Math.abs(v) < GATE_HALF + segLen / 2) continue
+    if (put(wallU, v, wall, "#c9c0ae", 1.2, true)) walls++
+  }
+  let posts = 0
+  for (const sgn of [-1, 1]) {
+    if (put(wallU, sgn * (GATE_HALF + 0.3), MODELS.gatepost, "#bdb3a0", 1.2)) posts++
+  }
+
+  // cypresses flanking the approach, clear of the paving
+  const CY_TINT = ["#4f7a44", "#3f6b3a", "#5a8a4e"]
+  let trees = 0
+  for (const sgn of [-1, 1]) {
+    for (let i = 0; i < 4; i++) {
+      // flank the forecourt as well as the approach: the approach is only as
+      // long as the ground between the palace and the road allows
+      const u = doorU - 1.0 + i * 3.4
+      if (put(u, sgn * (halfWide + 1.6), MODELS.cypress, CY_TINT[i % 3], 1.6)) trees++
+    }
+  }
+
+  // lamps on the approach, using the existing procedural kind
+  let lamps = 0
+  for (const sgn of [-1, 1]) {
+    for (let i = 0; i < 2; i++) {
+      const u = doorU + 1.6 + i * 5.2
+      if (u > roadU) break
+      const d = ground(u, sgn * 3.6)
+      const gg = terrainRadius(d)
+      if (gg < WATER_LEVEL + 0.5) continue
+      const at = d.clone().multiplyScalar(gg)
+      if (propClearance(at, props).nearest < 1.1) continue
+      props.push({
+        kind: "lamp-post",
+        position: at,
+        quaternion: surfaceQuaternion(d, 0),
+        scale: 1,
+        colorA: KIND_COLORS["lamp-post"]?.[0] ?? "#8a8478",
+        colorB: KIND_COLORS["lamp-post"]?.[1] ?? "#e8dcb0",
+        seed: seed++,
+      })
+      lamps++
+    }
+  }
+
+  // does the approach actually connect? the largest step between consecutive
+  // paved centres, and how far the last tile still is from the road
+  _palace = {
+    "sited at ring": +(best.ring * 0.7).toFixed(2),
+    "siting pass (0 = full approach, 2 = deep cut)": usedPass,
+    "palace height": +modelH(m).toFixed(2),
+    "palace height in players": +(modelH(m) / PLAYER_H).toFixed(2),
+    "palace footprint": `${(halfWide * 2).toFixed(1)} x ${(halfDepth * 2).toFixed(1)}`,
+    "palace centre from arterial": +arterialDistance(pDir).toFixed(2),
+    "door from arterial": +(arterialDistance(pDir) - halfDepth).toFixed(2),
+    "forecourt depth": +(2 * tileLen).toFixed(2),
+    "approach length door to road": +(approachEnd - doorU).toFixed(2),
+    "approach ends this far from the corridor band":
+      +(arterialDistance(ground(approachEnd, 0)) - CORRIDOR_SUPPRESS).toFixed(2),
+    "paving tile pitch": +tileLen.toFixed(2),
+    "wall at": +wallU.toFixed(2),
+    "gate gap width": +(2 * (GATE_HALF + 0.3)).toFixed(2),
+    "lawn, wall to palace face": +(wallU - doorU).toFixed(2),
+    "paving tiles": laid,
+    "wall segments": walls,
+    "gate posts": posts,
+    cypresses: trees,
+    lamps,
+  }
+}
+
+
+/**
+ * Stairs, and only on ground that has somewhere to go.
+ *
+ * Stairs.glb rises 1.392u over 3.115u of run — a fixed 24 degrees. Standing
+ * one on the flat is nonsense, so each is fitted to a patch of hillside whose
+ * own drop matches its rise, and any that cannot find one is simply not
+ * placed. The prop is seated at the LOW end's ground height, so the bottom
+ * step lands exactly on the lower ground and the whole error shows up at the
+ * top step, where it is reported.
+ */
+function placeStairs(props: PlacedProp[]) {
+  const fits: StairFit[] = []
+  const m = MODELS.stairs
+  const runLen = m.src[2] * m.scale
+  const rise = m.src[1] * m.scale
+  const half = runLen / 2
+
+  const sites: { where: string; at: THREE.Vector3; from: number; to: number }[] = []
+  const zoneOf = (id: string) => ZONES.find((z) => z.id === id)
+  const ghat = zoneOf("ghat")
+  const temple = zoneOf("temple")
+  if (ghat) {
+    for (let i = 0; i < 4; i++) {
+      sites.push({
+        where: `ghat descent ${i + 1}`,
+        at: new THREE.Vector3(...ghat.center).normalize(),
+        from: 2 + i * 0.4, to: 18,
+      })
+    }
+  }
+  if (temple) {
+    for (let i = 0; i < 3; i++) {
+      sites.push({
+        where: `temple climb ${i + 1}`,
+        at: new THREE.Vector3(...temple.center).normalize(),
+        from: 3 + i * 0.4, to: 20,
+      })
+    }
+  }
+  // any civic plot whose pad stands clear above the ground beside it
+  for (const p of _plotSiting) {
+    if (!p.ok) continue
+    const rel = padRelief(p.dir, p.radius + PLOT_GRADE_RAMP)
+    if (rel.level - rel.lo < rise * 0.6) continue
+    sites.push({
+      where: `${p.id} pad`,
+      at: p.dir.clone(),
+      from: p.radius + 0.5,
+      to: p.radius + PLOT_GRADE_RAMP + 3,
+    })
+  }
+
+  let seed = 9900
+  const taken: THREE.Vector3[] = []
+  for (const site of sites) {
+    const base = site.at
+    const R = terrainRadius(base)
+    const t1 = Math.abs(base.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)
+    const u = new THREE.Vector3().crossVectors(t1, base).normalize()
+    const v = new THREE.Vector3().crossVectors(base, u).normalize()
+    let best: { mid: THREE.Vector3; up: THREE.Vector3; gLo: number; drop: number; err: number } | null = null
+
+    for (let rr = site.from; rr <= site.to && !(best && best.err < 0.02); rr += 0.6) {
+      for (let ai = 0; ai < 32; ai++) {
+        const a = (ai / 32) * Math.PI * 2
+        const mid = base
+          .clone()
+          .addScaledVector(u, (Math.cos(a) * rr) / R)
+          .addScaledVector(v, (Math.sin(a) * rr) / R)
+          .normalize()
+        const gm = terrainRadius(mid)
+        if (gm < WATER_LEVEL) continue
+        if (arterialDistance(mid) < CORRIDOR_SUPPRESS + 1.2) continue
+        const e1 = new THREE.Vector3().crossVectors(t1, mid).normalize()
+        const e2 = new THREE.Vector3().crossVectors(mid, e1).normalize()
+        for (let hi = 0; hi < 24; hi++) {
+          const h = (hi / 24) * Math.PI * 2
+          const dirH = e1.clone().multiplyScalar(Math.cos(h)).addScaledVector(e2, Math.sin(h)).normalize()
+          const lo = mid.clone().addScaledVector(dirH, -half / gm).normalize()
+          const up = mid.clone().addScaledVector(dirH, half / gm).normalize()
+          const gLo = terrainRadius(lo)
+          const gHi = terrainRadius(up)
+          if (gLo < WATER_LEVEL + 0.02) continue
+          const drop = gHi - gLo
+          const err = Math.abs(drop - rise)
+          if (err > 0.15) continue
+          if (best && err >= best.err) continue
+          const at = mid.clone().multiplyScalar(gLo)
+          if (propClearance(at, props).nearest < 2.2) continue
+          if (npcNearest(at) < 2.2) continue
+          let clash = false
+          for (const tk of taken) {
+            if (tk.distanceTo(at) < 3.2) {
+              clash = true
+              break
+            }
+          }
+          if (clash) continue
+          best = { mid, up: dirH, gLo, drop, err }
+        }
+      }
+    }
+
+    if (!best) {
+      fits.push({ where: site.where, rise, drop: NaN, bottom: NaN, top: NaN, ok: false })
+      continue
+    }
+    const spin = spinAlong(best.mid, new THREE.Vector3().crossVectors(best.mid, best.up))
+    const at = best.mid.clone().multiplyScalar(best.gLo)
+    props.push({
+      kind: "glb-building",
+      position: at,
+      quaternion: surfaceQuaternion(best.mid, spin),
+      scale: m.scale,
+      colorA: "#cfc4ae",
+      colorB: "#cfc4ae",
+      seed: seed++,
+      modelPath: m.path,
+      tint: "#c8bfa9",
+      plinth: false,
+      box: modelBox(m),
+    })
+    taken.push(at)
+    fits.push({
+      where: site.where,
+      rise,
+      drop: best.drop,
+      bottom: 0,
+      top: Math.abs(best.drop - rise),
+      ok: true,
+    })
+  }
+  _stairFits = fits
+}
+
+/**
+ * Parked vehicles, seating and palm groups along the frontages. They sit just
  * OUTSIDE the corridor suppression band, so they read as kerbside without
  * ever standing on the carriageway.
  */
 function placeRoadside(props: PlacedProp[]) {
   const net = NET
   if (!net) return
-  const spots: { t: number; side: number; path: string; scale: number; tint: string; box: { hx: number; hz: number; top: number } }[] = []
-  const CARS = [
-    { path: `${M}car-sedan-01.glb`, scale: 1, tint: "#c8543f", box: { hx: 0.6, hz: 1.5, top: 0.8 } },
-    { path: `${M}car-sedan-01.glb`, scale: 1, tint: "#4a6f8a", box: { hx: 0.6, hz: 1.5, top: 0.8 } },
-    { path: `${M}car-sedan-01.glb`, scale: 1, tint: "#e0c060", box: { hx: 0.6, hz: 1.5, top: 0.8 } },
-    { path: `${M}Police Car.glb`, scale: 1, tint: "#e8e4da", box: { hx: 0.9, hz: 1.9, top: 1.2 } },
-    { path: `${M}sports_car.glb`, scale: 1, tint: "#b83f52", box: { hx: 1.0, hz: 2.0, top: 1.2 } },
+  type Spot = { t: number; side: number; model: string; tint: string }
+  const spots: Spot[] = []
+  const CARS: [string, string][] = [
+    ["sedan", "#c8543f"], ["sedan", "#4a6f8a"], ["sedan", "#e0c060"],
+    ["police-car", "#e8e4da"], ["sports-car", "#b83f52"], ["sedan", "#7a9c6a"],
   ]
-  const SEATS = [
-    { path: `${M}bench-01.glb`, scale: 1, tint: "#8a6a4a", box: { hx: 0.7, hz: 0.3, top: 1.0 } },
-    { path: `${M}bench-01.glb`, scale: 1, tint: "#6f5638", box: { hx: 0.7, hz: 0.3, top: 1.0 } },
+  const SEATS: [string, string][] = [["bench", "#8a6a4a"], ["bench", "#6f5638"]]
+  for (let i = 0; i < 12; i++) {
+    const t = ((i + 0.35) / 12) * net.total
+    const [model, tint] = i % 3 === 2 ? SEATS[i % SEATS.length] : CARS[i % CARS.length]
+    spots.push({ t, side: i % 2 === 0 ? 1 : -1, model, tint })
+  }
+  // palm groups all the way round the loop — the cheapest way to make the
+  // roadsides read as Bengaluru rather than as bare embankment
+  const PALMS: [string, string][] = [
+    ["palm1", "#5c8a3f"], ["palm2", "#67965a"], ["palm3", "#4e7a36"],
+    ["palm4", "#568444"], ["palm5", "#6a9c5a"],
   ]
-  // spread along the loop, alternating sides
-  for (let i = 0; i < 10; i++) {
-    const t = ((i + 0.35) / 10) * net.total
-    const kit = i % 3 === 2 ? SEATS[i % SEATS.length] : CARS[i % CARS.length]
-    spots.push({ t, side: i % 2 === 0 ? 1 : -1, ...kit })
+  for (let i = 0; i < 14; i++) {
+    const t = ((i + 0.8) / 14) * net.total
+    for (let k = 0; k < 3; k++) {
+      const [model, tint] = PALMS[(i + k * 2) % PALMS.length]
+      spots.push({ t: t + (k * 3.4) / 23, side: i % 2 === 0 ? -1 : 1, model, tint })
+    }
   }
 
   let seed = 9800
   const dir = new THREE.Vector3()
   const ahead = new THREE.Vector3()
   for (const s of spots) {
+    const m = MODELS[s.model]
     loopDir(s.t, dir)
     loopDir(s.t + 0.01, ahead)
     const fwd = ahead.clone().sub(dir)
@@ -2392,13 +3606,12 @@ function placeRoadside(props: PlacedProp[]) {
     fwd.normalize()
     const right = new THREE.Vector3().crossVectors(fwd, dir).normalize()
     const g = terrainRadius(dir)
-    // walk out from the kerb until clear of the suppression band and legal
     let done = false
-    for (let lat = CORRIDOR_SUPPRESS + 0.6; lat <= CORRIDOR_SUPPRESS + 4 && !done; lat += 0.5) {
+    for (let lat = CORRIDOR_SUPPRESS + 0.6; lat <= CORRIDOR_SUPPRESS + 6 && !done; lat += 0.5) {
       const d = dir.clone().addScaledVector(right, (s.side * lat) / g).normalize()
       const gr = terrainRadius(d)
       if (gr < WATER_LEVEL + 0.8) continue
-      if (slopeAt(d, gr) > 0.3) continue
+      if (slopeAt(d, gr) > 0.32) continue
       if (corridorSurface(d) !== null) continue
       const at = d.clone().multiplyScalar(gr)
       if (propClearance(at, props).nearest < 2.2) continue
@@ -2406,21 +3619,24 @@ function placeRoadside(props: PlacedProp[]) {
       props.push({
         kind: "glb-building",
         position: at,
-        // parked along the kerb, nose down the road
-        quaternion: surfaceQuaternion(d, spinAlong(d, fwd)),
-        scale: s.scale,
+        // vehicles park nose-down-the-road; trees just stand
+        quaternion: surfaceQuaternion(d, m.faceAlong ? spinAlong(d, fwd) : 0),
+        scale: m.scale,
         colorA: s.tint,
         colorB: s.tint,
         seed: seed++,
-        modelPath: s.path,
+        modelPath: m.path,
+        part: m.part,
         tint: s.tint,
-        plinth: false,
-        box: s.box,
+        plinth: m.plinth,
+        box: modelBox(m),
       })
       done = true
     }
   }
 }
+
+
 function placeGlbBuildings(props: PlacedProp[]) {
   let seed = 9100
   for (const b of GLB_BUILDINGS) {
@@ -2809,6 +4025,26 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
   /** raised kerbs stop this far from a station: the junction plaza */
   const JUNCTION_CLEAR = 6.5
   const junctionDirs = net.stations.map((s) => loopDir(s.t, new THREE.Vector3()).clone())
+  /**
+   * Bridge mouths get the same treatment as junctions.
+   *
+   * The deck has no median -- it is a flat carriageway between parapets --
+   * while the road it meets carries a MEDIAN_TOP kerb down its centreline. So
+   * walking the centre line onto a bridge you step MEDIAN_TOP - ASPHALT_LIFT
+   * = 0.140u down at the mouth. That is the whole of the handoff figure that
+   * went 0.005u -> 0.140u; it was not P56 that did it, it appeared when the
+   * deck was tied to the road profile and stopped standing proud of the road.
+   * Ending the kerb short of the deck, the way it already ends short of a
+   * junction, removes the step instead of papering over it.
+   */
+  const mouthDirs: THREE.Vector3[] = []
+  for (const d of bridgeSpans()) {
+    if (!d.onLoop) continue
+    mouthDirs.push(loopDir(d.tA, new THREE.Vector3()).clone())
+    mouthDirs.push(loopDir(d.tB, new THREE.Vector3()).clone())
+  }
+  /** how far back from a deck end the median and footpath stop */
+  const MOUTH_CLEAR = 2.4
 
   const legsData: { ai: number; samples: Sample[]; steps: number }[] = []
 
@@ -3231,9 +4467,9 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
       // the trim leaves each of them fragments of footpath and median, which
       // read as pale bands lying across the paving — the "broken road". A real
       // junction is open tarmac, so the underlay carries it alone.
-      const nearJunction = junctionDirs.some(
-        (j) => j.angleTo(s0.dir) * s0.ground < JUNCTION_CLEAR,
-      )
+      const nearJunction =
+        junctionDirs.some((j) => j.angleTo(s0.dir) * s0.ground < JUNCTION_CLEAR) ||
+        mouthDirs.some((j) => j.angleTo(s0.dir) * s0.ground < MOUTH_CLEAR)
 
       for (const sign of [-1, 1]) {
         const inner = sign * LANE_IN
@@ -3404,8 +4640,8 @@ type ColliderSpec =
   | { shape: "rail"; r: number; top: number }
 
 const COLLIDER_SPECS: Partial<Record<PropKind, ColliderSpec>> = {
-  palace: { shape: "box", hx: 1.57, hz: 0.6, top: 2.35 },
-  gopuram: { shape: "box", hx: 0.8, hz: 0.8, top: 3.04 },
+  // ten tiers, cap and finial: see the gopuram case in PropsLayer
+  gopuram: { shape: "box", hx: 0.8, hz: 0.8, top: 5.9 },
   "temple-court": { shape: "box", hx: 1.3, hz: 1.1, top: 1.2 },
   "mill-block": { shape: "box", hx: 1.1, hz: 0.9, top: 2.2 },
   "workshop-shed": { shape: "box", hx: 1.0, hz: 0.8, top: 1.5 },
@@ -3809,7 +5045,7 @@ const PLOT_SLOPE = 0.3
 
 /** kinds that occupy ground a plot may not overlap. Verge scatter is not one. */
 const PLOT_BLOCKERS = new Set<PropKind>([
-  "palace", "gopuram", "temple-court", "nandi-statue", "temple-steps", "mill-block",
+  "gopuram", "temple-court", "nandi-statue", "temple-steps", "mill-block",
   "workshop-shed", "stall", "market-umbrella", "haveli-arch", "banyan", "mango-tree",
   "peepal-tree", "ghat-steps", "zone-signboard", "metro-station",
 ])
@@ -4311,9 +5547,37 @@ function corridorSurfaceAt(
     if (a > FOOT_OUT + reach) return null
     return shoulderHeight(ground, edgeRaw, raw, a, reach)
   }
-  const lift = rideLift(a)
+  // the median kerb is not drawn across a bridge mouth, so it must not be felt
+  // there either -- that mismatch IS the 0.140u handoff step
+  const lift = mouthFade(dir, ground) * rideLift(a) + (1 - mouthFade(dir, ground)) * ASPHALT_LIFT
   const limit = a * Math.tan(MAX_TWIST)
   return ground + Math.max(-limit, Math.min(limit, raw - ground)) + lift
+}
+
+/**
+ * 1 well away from a deck end, 0 at one: the factor that flattens the ride
+ * cross-section back to plain asphalt as the road hands over to a bridge.
+ *
+ * Kept lazily and cached, because corridorSurface runs on every player frame.
+ */
+let _mouths: THREE.Vector3[] | null = null
+const MOUTH_FADE = 3.2
+function mouthFade(dir: THREE.Vector3, ground: number) {
+  if (!_mouths) {
+    _mouths = []
+    for (const d of bridgeSpans()) {
+      if (!d.onLoop) continue
+      _mouths.push(loopDir(d.tA, new THREE.Vector3()).clone())
+      _mouths.push(loopDir(d.tB, new THREE.Vector3()).clone())
+    }
+  }
+  let f = 1
+  for (const m of _mouths) {
+    const lat = m.angleTo(dir) * ground
+    if (lat >= MOUTH_FADE) continue
+    f = Math.min(f, smoothstep01(lat / MOUTH_FADE))
+  }
+  return f
 }
 
 /** module-scope smoothstep for the shoulder curve */

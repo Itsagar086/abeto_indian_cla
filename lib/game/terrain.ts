@@ -636,7 +636,17 @@ export function loopWorldS(t: number) {
  * read as torn floating patches, and a plumb tower on a 13° sloped pad read
  * as a 13° lean.
  */
-export type PlotGradeSite = { dir: THREE.Vector3; radius: number }
+export type PlotGradeSite = {
+  dir: THREE.Vector3
+  radius: number
+  /**
+   * Force the level instead of sampling it. A row of shopfronts standing
+   * shoulder to shoulder has to be ONE terrace: sampled per building, each
+   * pad grades to its own ground and the "nearest wins" rule below puts a
+   * hard step down the middle of the row.
+   */
+  level?: number
+}
 let _plotGrades: { dir: THREE.Vector3; radius: number; level: number }[] = []
 /** ramp width from pad edge back to natural ground, world units */
 export const PLOT_GRADE_RAMP = 3
@@ -646,7 +656,7 @@ export function registerPlotGrading(sites: PlotGradeSite[]) {
   // the road-graded (but plot-ungraded) ground at its own centre
   const grades = sites.map((s) => {
     const dir = s.dir.clone().normalize()
-    return { dir, radius: s.radius, level: terrainRadius(dir) }
+    return { dir, radius: s.radius, level: s.level ?? terrainRadius(dir) }
   })
   _plotGrades = grades
 }

@@ -238,33 +238,68 @@ function mergedGlb(scene: THREE.Object3D, key: string, part?: string) {
   return out
 }
 
-function GlbBuilding({ p }: { p: PlacedProp }) {
-  const { scene } = useGLTF(p.modelPath!, DRACO_PATH)
-  const pos = p.position.toArray() as [number, number, number]
-  const quat = new THREE.Quaternion(p.quaternion.x, p.quaternion.y, p.quaternion.z, p.quaternion.w)
-  const parts = useMemo(
-    () => mergedGlb(scene, `${p.modelPath}|${p.part ?? ""}`, p.part),
-    [scene, p.modelPath, p.part],
-  )
+/**
+ * Every placement of ONE model, as a single InstancedMesh with per-instance
+ * colour — plus a second one for the plinths where the model wants them.
+ *
+ * P57 pushed the GLB count to 104 placements, which at a mesh and an outline
+ * each is 208 draw calls. Grouping by (model, part) takes that to two calls
+ * per DISTINCT model regardless of how many copies stand on the planet, which
+ * is the whole point of reusing a small library heavily. The tint survives:
+ * instanceColor multiplies the baked vertex colours exactly as the per-prop
+ * material colour did.
+ */
+function GlbFleet({ path, part, items }: { path: string; part?: string; items: PlacedProp[] }) {
+  const { scene } = useGLTF(path, DRACO_PATH)
+  const merged = useMemo(() => mergedGlb(scene, `${path}|${part ?? ""}`, part), [scene, path, part])
+  const { matrices, colors, plinths } = useMemo(() => {
+    const matrices: THREE.Matrix4[] = []
+    const colors: THREE.Color[] = []
+    const plinths: THREE.Matrix4[] = []
+    const scale = new THREE.Vector3()
+    for (const p of items) {
+      const world = new THREE.Matrix4().compose(p.position, p.quaternion, scale.setScalar(p.scale))
+      matrices.push(world)
+      colors.push(new THREE.Color(p.tint ?? "#ffffff"))
+      if (p.plinth !== false) {
+        plinths.push(
+          partMatrix(world, 0, 0.04 - 0.3, 0, merged.hx * 2 + 0.6, 0.6, merged.hz * 2 + 0.6),
+        )
+      }
+    }
+    return { matrices, colors, plinths }
+  }, [items, merged])
+
+  const ref = useRef<THREE.InstancedMesh>(null)
+  useLayoutEffect(() => {
+    const mesh = ref.current
+    if (!mesh) return
+    matrices.forEach((m, i) => {
+      mesh.setMatrixAt(i, m)
+      mesh.setColorAt(i, colors[i])
+    })
+    mesh.instanceMatrix.needsUpdate = true
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+  }, [matrices, colors])
+
   return (
-    <group position={pos} quaternion={quat} scale={p.scale}>
-      <mesh geometry={parts.geo} castShadow receiveShadow>
-        <meshToonMaterial
-          color={p.tint ?? "#ffffff"}
-          vertexColors
-          gradientMap={toonGradient}
-        />
+    <>
+      <instancedMesh
+        ref={ref}
+        args={[merged.geo, undefined, matrices.length]}
+        castShadow
+        receiveShadow
+      >
+        <meshToonMaterial vertexColors gradientMap={toonGradient} />
         <Ink />
-      </mesh>
-      {/* Shallow foundation base. Trees and street pieces set plinth:false —
-          a coconut palm does not stand on a concrete pad. */}
-      {p.plinth !== false && (
-        <mesh position={[0, 0.04 - 0.3, 0]} receiveShadow>
-          <boxGeometry args={[parts.hx * 2 + 0.6, 0.6, parts.hz * 2 + 0.6]} />
+      </instancedMesh>
+      {plinths.length > 0 && (
+        <InstancedPart matrices={plinths} receiveShadow>
+          <boxGeometry args={[1, 1, 1]} />
           <meshToonMaterial color="#cfc4ae" gradientMap={toonGradient} />
-        </mesh>
+        </InstancedPart>
       )}
-    </group>
+    </>
   )
 }
 
@@ -510,12 +545,8 @@ function PropInstance({ p }: { p: PlacedProp }) {
       // draped onto the ground it covers — see CivicPad
       return <CivicPad p={p} />
     case "glb-building":
-      // its own Suspense: a still-loading model must not blank the world
-      return (
-        <Suspense fallback={null}>
-          <GlbBuilding p={p} />
-        </Suspense>
-      )
+      // drawn by GlbFleet, one InstancedMesh per model — never per prop
+      return null
     case "stall":
       return (
         <group position={pos} quaternion={quat} scale={p.scale}>
@@ -574,62 +605,6 @@ function PropInstance({ p }: { p: PlacedProp }) {
             <coneGeometry args={[0.35, 0.5, 4]} />
             <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
             <Ink />
-          </mesh>
-        </group>
-      )
-    case "palace":
-      return (
-        <group position={pos} quaternion={quat} scale={p.scale}>
-          {/* main block. Every wall runs 0.8 below grade so the downhill edge
-              cannot float and the uphill edge simply buries itself. */}
-          <mesh position={[0, 0.15, 0]} castShadow receiveShadow>
-            <boxGeometry args={[2.6, 1.9, 1.2]} />
-            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
-            <Ink />
-          </mesh>
-
-          {/* centre tower + pyramid roof */}
-          <mesh position={[0, 0.35, 0]} castShadow receiveShadow>
-            <boxGeometry args={[0.9, 2.3, 0.9]} />
-            <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
-            <Ink />
-          </mesh>
-          <mesh position={[0, 1.78, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
-            <coneGeometry args={[0.62, 0.55, 4]} />
-            <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
-            <Ink />
-          </mesh>
-
-          {/* corner towers, each capped with a cone */}
-          {[-1.25, 1.25].map((x, i) => (
-            <group key={`t${i}`}>
-              <mesh position={[x, 0.45, 0]} castShadow receiveShadow>
-                <cylinderGeometry args={[0.32, 0.32, 2.5, 10]} />
-                <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
-                <Ink />
-              </mesh>
-              <mesh position={[x, 2, 0]} castShadow>
-                <coneGeometry args={[0.42, 0.6, 10]} />
-                <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
-                <Ink />
-              </mesh>
-            </group>
-          ))}
-
-          {/* battlements along the front top edge. -z is the gate side: the
-              prop spin (ang + PI) puts the arch on this face, not the other */}
-          {[-1, -0.5, 0, 0.5, 1].map((x, i) => (
-            <mesh key={`b${i}`} position={[x, 1.18, -0.5]} castShadow>
-              <boxGeometry args={[0.18, 0.15, 0.18]} />
-              <meshToonMaterial color={p.colorA} gradientMap={toonGradient} />
-              <Ink />
-            </mesh>
-          ))}
-
-          {/* entrance, facing the gate. 0.1 thick inset — no outline */}
-          <mesh position={[0, 0.35, -0.61]} castShadow>
-            <boxGeometry args={[0.5, 0.7, 0.1]} />
-            <meshToonMaterial color="#3a2f28" gradientMap={toonGradient} />
           </mesh>
         </group>
       )
@@ -916,8 +891,17 @@ function PropInstance({ p }: { p: PlacedProp }) {
     case "traffic-signal":
       return <TrafficSignal p={p} />
     case "gopuram": {
-      // four tiers shrinking ~72% a level, alternating stone and red
-      const tiers = [1.3, 0.95, 0.7, 0.5]
+      // Ten tiers tapering 8% a level, alternating stone and red.
+      //
+      // It was four, and 4.86u tall at its authored scale -- shorter than
+      // every building P57 stands up, since those have a 5u floor. Nandi
+      // Betta has to lead the skyline, and scaling the whole prop was not
+      // available: at the scale that made it tall enough its 1.6u base grew
+      // wide enough to swallow Baba Someshwar, whose spawn is a weight-1
+      // terrain anchor and cannot move. Height without width is also simply
+      // what a gopuram is.
+      const tiers = Array.from({ length: 10 }, (_, i) => 1.3 * 0.92 ** i)
+      const capY = 1.125 + tiers.length * 0.45 + 0.125
       return (
         <group position={pos} quaternion={quat} scale={p.scale}>
           {/* base, sunk 0.6 below grade */}
@@ -937,12 +921,12 @@ function PropInstance({ p }: { p: PlacedProp }) {
             </mesh>
           ))}
           {/* barrel-vault cap and gold finial */}
-          <mesh position={[0, 2.825, 0]} castShadow>
+          <mesh position={[0, capY, 0]} castShadow>
             <boxGeometry args={[0.55, 0.25, 0.3]} />
             <meshToonMaterial color={p.colorB} gradientMap={toonGradient} />
             <Ink />
           </mesh>
-          <mesh position={[0, 3.04, 0]} castShadow>
+          <mesh position={[0, capY + 0.215, 0]} castShadow>
             <sphereGeometry args={[0.09, 10, 10]} />
             <meshToonMaterial color="#f2d060" gradientMap={toonGradient} />
           </mesh>
@@ -1564,14 +1548,37 @@ export function PropsLayer() {
   const corridors = useMemo(() => buildCorridors(props), [props])
   const rails = useMemo(() => props.filter((p) => p.kind === "bridge-rail"), [props])
   const pillars = useMemo(() => props.filter((p) => p.kind === "metro-pillar"), [props])
+  // one fleet per distinct model, so reusing a small library heavily costs
+  // draw calls per MODEL and not per placement
+  const fleets = useMemo(() => {
+    const by = new Map<string, { path: string; part?: string; items: PlacedProp[] }>()
+    for (const p of props) {
+      if (p.kind !== "glb-building" || !p.modelPath) continue
+      const key = `${p.modelPath}|${p.part ?? ""}`
+      const hit = by.get(key)
+      if (hit) hit.items.push(p)
+      else by.set(key, { path: p.modelPath, part: p.part, items: [p] })
+    }
+    return [...by.entries()]
+  }, [props])
   const solo = useMemo(
-    () => props.filter((p) => p.kind !== "bridge-rail" && p.kind !== "metro-pillar"),
+    () =>
+      props.filter(
+        (p) =>
+          p.kind !== "bridge-rail" && p.kind !== "metro-pillar" && p.kind !== "glb-building",
+      ),
     [props],
   )
   return (
     <group>
       {solo.map((p, i) => (
         <PropInstance key={i} p={p} />
+      ))}
+      {fleets.map(([key, f]) => (
+        // its own Suspense: a still-loading model must not blank the world
+        <Suspense key={key} fallback={null}>
+          <GlbFleet path={f.path} part={f.part} items={f.items} />
+        </Suspense>
       ))}
       <BridgeRails rails={rails} />
       <MetroPillars pillars={pillars} />
