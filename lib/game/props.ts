@@ -159,6 +159,10 @@ const DECK_MIN_CLEAR = 6.4
 const DECK_WATER = WATER_LEVEL + 4.8
 /** generous on purpose: a tight limit ratchets the deck up over rough ground */
 const DECK_MAX_STEP = 0.4
+/** the metro viaduct must clear a road bridge by this much (train + deck) */
+const BRIDGE_HEADROOM = 4.2
+/** how far the road runs onto each ramp end before the deck takes over */
+const DECK_OVERLAP = 0.04
 
 const PILLAR_STEP = 0.075
 /** slide offsets tried when a footing lands on a villager, nearest first */
@@ -516,6 +520,13 @@ function buildNetwork(placed: PlacedProp[]): MetroNet {
   const deck = new Float64Array(n)
   for (let i = 0; i < n; i++) {
     deck[i] = Math.max(smooth[i] + DECK_RISE, raw[i] + DECK_MIN_CLEAR, DECK_WATER)
+    // Clear the ROAD BRIDGES too, not just the ground. Over a gorge the raw
+    // terrain is the gorge floor, so a viaduct sized off it came down to
+    // 1.17u above the bridge deck — under the height of the character walking
+    // it, which is why the pillars looked no taller than he is.
+    probe.set(dirs[i * 3], dirs[i * 3 + 1], dirs[i * 3 + 2])
+    const road = bridgeSurface(probe)
+    if (road !== null) deck[i] = Math.max(deck[i], road + BRIDGE_HEADROOM)
   }
   // two wrapped passes each way so the closed loop meets itself smoothly
   for (let pass = 0; pass < 2; pass++) {
@@ -656,6 +667,19 @@ function sampleLoopDirs(
 export function loopDir(t: number, target: THREE.Vector3) {
   if (!NET) return target.set(0, 1, 0)
   return sampleLoopDirs(NET.dirs, NET.n, NET.step, t, target)
+}
+
+/**
+ * The same point, read straight off METRO_LOOP instead of the network.
+ *
+ * NET is only assigned inside placeMetro(), but placeBridges() runs BEFORE it —
+ * so an arterial (onLoop) span asking loopDir() during placement got the
+ * (0,1,0) fallback and stacked its entire deck at the north pole, which is why
+ * the bridges vanished. The geometry is identical either way: buildNetwork
+ * destructures these very arrays.
+ */
+export function loopDirRaw(t: number, target: THREE.Vector3) {
+  return sampleLoopDirs(METRO_LOOP.dirs, METRO_LOOP.n, METRO_LOOP.step, t, target)
 }
 
 /** deck radius at arc parameter t */
@@ -1121,7 +1145,7 @@ function bridgeSpans(): BridgeSpan[] {
     const ahead = new THREE.Vector3()
     const behind = new THREE.Vector3()
     const q = new THREE.Vector3()
-    const loopAt = (t: number) => sampleLoopDirs(METRO_LOOP.dirs, METRO_LOOP.n, METRO_LOOP.step, t, probe)
+    const loopAt = (t: number) => loopDirRaw(t, probe)
     /** the corridor's own dry rule: centre plus both verges must be clear */
     const edgeWet = (t: number) => {
       loopAt(t)
@@ -1158,10 +1182,18 @@ function bridgeSpans(): BridgeSpan[] {
         if (arc >= MIN_SPAN) {
           let tA = runStart - BRIDGE_RAMP
           let tB = end + BRIDGE_RAMP
-          // walk each ramp foot out until the ground under the full
-          // cross-section is dry, then until the approach is rideable
-          while (edgeWet(tA) && runStart - tA < 0.5) tA -= BRIDGE_SAMPLE
-          while (edgeWet(tB) && tB - end < 0.5) tB += BRIDGE_SAMPLE
+          // Walk each ramp foot out until the ground under the full
+          // cross-section is dry, then on until it reaches a real BANK.
+          // Landing at the waterline made the road appear to run down into
+          // the river; BANK_CLEAR puts the ramp foot on ground properly
+          // above the water.
+          const BANK_CLEAR = 2.2
+          const atBank = (t: number) => {
+            loopAt(t)
+            return !edgeWet(t) && terrainRadius(probe) >= WATER_LEVEL + BANK_CLEAR
+          }
+          while (!atBank(tA) && runStart - tA < 0.7) tA -= BRIDGE_SAMPLE
+          while (!atBank(tB) && tB - end < 0.7) tB += BRIDGE_SAMPLE
           const APPROACH_GRADE = 0.35
           let extra = 0.3
           while (extra > 0 && gradeAt(tA) > APPROACH_GRADE) {
@@ -1290,6 +1322,17 @@ function bridgeHeight(
   bankB: number,
   deckR = BRIDGE_DECK_R,
 ) {
+  if (span.onLoop) {
+    // An arterial crossing runs as ONE straight grade from bank to bank.
+    // A level deck forced the whole bank-height difference (8.1u at the
+    // samadhi-grove gorge) into the short ramp at the high end, which
+    // measured grade 0.66 — the steep climb onto the bridge. Spread over the
+    // full span it is 0.21, and the deck still clears the water because the
+    // two ends ARE the banks.
+    const f = span.tB > span.tA ? (t - span.tA) / (span.tB - span.tA) : 0
+    const k = Math.max(0, Math.min(1, f))
+    return Math.max(BRIDGE_DECK_R, bankA + (bankB - bankA) * k)
+  }
   if (t <= span.t0) {
     const f = span.t0 > span.tA ? (t - span.tA) / (span.t0 - span.tA) : 1
     return bankA + (deckR - bankA) * f
@@ -1340,7 +1383,7 @@ function placeBridges(props: PlacedProp[]) {
 
     // an arterial span walks the LOOP; a local-road span walks its own arc
     const dirAt = (t: number, target: THREE.Vector3) =>
-      span.onLoop ? loopDir(t, target) : arcPoint(a, b, omega, t, target)
+      span.onLoop ? loopDirRaw(t, target) : arcPoint(a, b, omega, t, target)
     const pointAt = (t: number, target: THREE.Vector3) =>
       dirAt(t, target).multiplyScalar(bridgeHeight(span, t, bankA, bankB, deckR))
 
@@ -1404,6 +1447,37 @@ function placeBridges(props: PlacedProp[]) {
         seed: seed++,
         aux: [bed, top],
       })
+    }
+
+    // ABUTMENTS. The two approach ramps carried nothing: the deck simply rose
+    // off the bank with open air beneath it, which is what makes a bridge read
+    // as unattached however exactly its ends meet the ground. Stand a support
+    // wherever the ramp is far enough off the ground to show daylight, on both
+    // sides of every crossing.
+    const ABUT_MIN = 0.35
+    const ABUT_STEP = BRIDGE_SAMPLE
+    for (const [from, to] of [
+      [span.tA, span.t0],
+      [span.t1, span.tB],
+    ] as const) {
+      if (to <= from) continue
+      for (let t = from + ABUT_STEP * 0.5; t < to; t += ABUT_STEP) {
+        const d = dirAt(t, new THREE.Vector3())
+        const g = terrainRadius(d)
+        const h = bridgeHeight(span, t, bankA, bankB, deckR)
+        if (h - g < ABUT_MIN) continue
+        const bed = d.clone().multiplyScalar(g)
+        props.push({
+          kind: "bridge-pier",
+          position: bed,
+          quaternion: surfaceQuaternion(d, 0),
+          scale: 1,
+          colorA: pierA,
+          colorB: pierB,
+          seed: seed++,
+          aux: [bed, d.clone().multiplyScalar(h)],
+        })
+      }
     }
   }
 }
@@ -2365,6 +2439,17 @@ function ownDeckAbove(dir: THREE.Vector3, ground: number, idA: string, idB: stri
       lateral = Math.abs(Math.asin(Math.max(-1, Math.min(1, dir.dot(d.n))))) * d.deckR
     }
     if (lateral > d.span.halfWidth) continue
+    // An arterial deck owns its span outright. Height is not the test: the
+    // deck meets the road exactly at both ramp feet, so between them the deck
+    // IS the road. Judging by height instead let the corridor carry on
+    // underneath the deck and then stop dead in mid-air over the gorge, which
+    // is what dropped the player into the water.
+    //
+    // The claim stops short of the feet by DECK_OVERLAP so the road runs a
+    // little way ONTO each ramp end. There the two surfaces are the same
+    // height, so the overlap is invisible — and without it neither covers the
+    // foot itself and there is a hole at each end of every bridge.
+    if (d.span.onLoop) return t > d.span.tA + DECK_OVERLAP && t < d.span.tB - DECK_OVERLAP
     // 2.5u: only the genuinely diving ghost road is culled — at +1 the rule
     // also bit under the descending ramp feet and punched 1u holes in the
     // road right before each bridge (measured, all four dry-land holes)
@@ -2435,6 +2520,10 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
   // bracket it. stations[] is built in METRO_ORDER, the same order ARTERIAL_PAIRS
   // derives from, and each carries its own arc-length position `t`.
   const tOf = new Map(net.stations.map((s) => [s.zone, s.t]))
+
+  /** raised kerbs stop this far from a station: the junction plaza */
+  const JUNCTION_CLEAR = 6.5
+  const junctionDirs = net.stations.map((s) => loopDir(s.t, new THREE.Vector3()).clone())
 
   const legsData: { ai: number; samples: Sample[]; steps: number }[] = []
 
@@ -2853,6 +2942,13 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
       const s1 = samples[i + 1]
       if (!s0.dry || !s1.dry) continue // bridges already carry the water crossings
       const dashes = dashSpans(s0.s, s1.s)
+      // Inside a junction the raised kerbs are dropped. Two legs meet here and
+      // the trim leaves each of them fragments of footpath and median, which
+      // read as pale bands lying across the paving — the "broken road". A real
+      // junction is open tarmac, so the underlay carries it alone.
+      const nearJunction = junctionDirs.some(
+        (j) => j.angleTo(s0.dir) * s0.ground < JUNCTION_CLEAR,
+      )
 
       for (const sign of [-1, 1]) {
         const inner = sign * LANE_IN
@@ -2882,19 +2978,22 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
           )
         }
 
-        // footpath
-        raised(
-          footpath,
-          s0,
-          s1,
-          Math.min(sign * FOOT_IN, sign * FOOT_OUT),
-          Math.max(sign * FOOT_IN, sign * FOOT_OUT),
-          FOOTPATH_TOP,
-        )
+        // footpath — but not through a junction, see nearJunction
+        if (!nearJunction) {
+          raised(
+            footpath,
+            s0,
+            s1,
+            Math.min(sign * FOOT_IN, sign * FOOT_OUT),
+            Math.max(sign * FOOT_IN, sign * FOOT_OUT),
+            FOOTPATH_TOP,
+          )
+        }
       }
 
-      // median, broken around every pillar footing
-      if (s0.medianOk && s1.medianOk) {
+      // median, broken around every pillar footing — and stopping short of a
+      // junction, like a real one does
+      if (s0.medianOk && s1.medianOk && !nearJunction) {
         raised(median, s0, s1, -MEDIAN_HALF, MEDIAN_HALF, MEDIAN_TOP)
       }
 
@@ -2914,6 +3013,79 @@ export function buildCorridors(props: PlacedProp[]): CorridorMesh[] {
       out.push({ key: `${ai}-${name}`, geometry: buf.build(), color, vertexColors })
     }
   })
+
+  /**
+   * THE UNDERLAY. One continuous full-width band of asphalt following the
+   * whole loop, laid 0.03u BELOW the ride surface.
+   *
+   * The corridor is built as nine legs cut at the stations, and each is then
+   * trimmed laterally by the fold caps and the hub wedge trim so that exactly
+   * one surface survives wherever two overlap. That is what stopped the
+   * z-fighting, but it also means the paving is only as continuous as the
+   * trimming allows: measured, 3.2% of the places a road should be drawn had
+   * no triangle over them at all, in patches up to 12u long around the hubs.
+   * That is the torn road.
+   *
+   * This band is built from the LOOP, not from the legs, so it has no seams to
+   * trim and no corners to surrender. Being below the legs it never wins a
+   * depth test against them — it shows only through a gap — so the markings,
+   * median and footpaths draw exactly as before and nothing new can z-fight.
+   */
+  {
+    const under = new MeshBuf()
+    const steps = Math.max(16, Math.ceil(net.total / CORRIDOR_STEP))
+    const dir = new THREE.Vector3()
+    const ahead = new THREE.Vector3()
+    const behind = new THREE.Vector3()
+    const probe = new THREE.Vector3()
+    let prev: { l: THREE.Vector3; r: THREE.Vector3 } | null = null
+
+    for (let i = 0; i <= steps; i++) {
+      const t = (i / steps) * net.total
+      loopDir(t, dir)
+      loopDir(t + TANGENT_EPS, ahead)
+      loopDir(t - TANGENT_EPS, behind)
+      const fwd = ahead.clone().sub(behind)
+      fwd.addScaledVector(dir, -fwd.dot(dir))
+      if (fwd.lengthSq() < 1e-12) {
+        prev = null
+        continue
+      }
+      fwd.normalize()
+      const right = new THREE.Vector3().crossVectors(fwd, dir).normalize()
+      const ground = loopProfileAt(t)
+
+      // the same water and deck rules the legs use, so the band stops exactly
+      // where they do and never paves the river or the underside of a viaduct
+      const wet =
+        ground < WATER_LEVEL + 0.3 ||
+        terrainRadius(dir) < WATER_LEVEL + 0.48 ||
+        terrainRadius(
+          probe.copy(dir).addScaledVector(right, FOOT_OUT / ground).normalize(),
+        ) < WATER_LEVEL + 0.48 ||
+        terrainRadius(
+          probe.copy(dir).addScaledVector(right, -FOOT_OUT / ground).normalize(),
+        ) < WATER_LEVEL + 0.48
+      // no pair: an arterial deck overhead suppresses the band, a local road
+      // bridge crossing above it does not
+      if (wet || ownDeckAbove(dir, ground, "", "")) {
+        prev = null
+        continue
+      }
+
+      const at = (o: number) => {
+        const p = dir.clone().addScaledVector(right, o / ground).normalize()
+        const h = (corridorSurface(p) ?? terrainRadius(p) + ASPHALT_LIFT) - 0.03
+        return p.multiplyScalar(h)
+      }
+      const cur = { l: at(-FOOT_OUT), r: at(FOOT_OUT) }
+      if (prev) under.quad(prev.l, prev.r, cur.r, cur.l)
+      prev = cur
+    }
+    if (!under.empty) {
+      out.push({ key: "underlay", geometry: under.build(), color: CORRIDOR_COLORS.asphalt })
+    }
+  }
 
   return out
 }

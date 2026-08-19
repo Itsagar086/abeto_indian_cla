@@ -3,7 +3,7 @@
 import { useRef, useEffect, useMemo } from "react"
 import { useFrame, useThree } from "@react-three/fiber"
 import * as THREE from "three"
-import { NPCS, PHYSICS, INITIAL_CHARACTER, ZONES } from "@/lib/game/data"
+import { NPCS, PHYSICS, INITIAL_CHARACTER, ZONES, WATER_LEVEL } from "@/lib/game/data"
 import { terrainRadius } from "@/lib/game/terrain"
 import {
   propCollision,
@@ -90,6 +90,11 @@ const _hit: PropHit = { normal: new THREE.Vector3(), depth: 0 }
 const _camDir = new THREE.Vector3()
 const _eye = new THREE.Vector3()
 const _footProbe = new THREE.Vector3()
+const _waterProbe = new THREE.Vector3()
+/** the last position known to be on solid footing, to fall back to */
+const _lastDry = new THREE.Vector3()
+/** stop this far short of the waterline, so he halts on the bank */
+const SHORE_MARGIN = 0.35
 const _losDir = new THREE.Vector3()
 const _losSample = new THREE.Vector3()
 const _losProbe = new THREE.Vector3()
@@ -247,6 +252,26 @@ export function Player() {
       // so the player stops pressing deeper while the overlap works itself out
       const into = velocity.current.dot(_hit.normal)
       if (into < 0) velocity.current.addScaledVector(_hit.normal, -into)
+    }
+
+    // ---- the water.s edge is a wall.
+    //
+    // Aarav cannot swim, so any step whose destination is open water is
+    // refused and the tangential velocity killed, leaving him on the bank.
+    // Bridges and the road are explicitly exempt: where a deck or the
+    // corridor covers a spot he is on a SURFACE, not in the water, which is
+    // what keeps every crossing walkable.
+    {
+      const to = _waterProbe.copy(position.current).normalize()
+      const onStructure = bridgeSurface(to) !== null || corridorSurface(to) !== null
+      if (!onStructure && terrainRadius(to) < WATER_LEVEL + SHORE_MARGIN) {
+        // lengthSq guard: nothing to fall back to on the very first frame
+        if (_lastDry.lengthSq() > 1) position.current.copy(_lastDry)
+        const radialNow = velocity.current.dot(up)
+        velocity.current.copy(up).multiplyScalar(radialNow)
+      } else {
+        _lastDry.copy(position.current)
+      }
     }
 
     // ground collision: the terrain, or a bridge deck where one is overhead
