@@ -2,37 +2,99 @@
 
 import { useRef, useEffect, useMemo } from "react"
 import { useFrame, useThree } from "@react-three/fiber"
-import { Outlines } from "@react-three/drei"
 import * as THREE from "three"
-import { NPCS, PHYSICS, INITIAL_CHARACTER, ZONES } from "@/lib/game/data"
-import { npcSurfacePosition, terrainRadius } from "@/lib/game/terrain"
+import { NPCS, PHYSICS, INITIAL_CHARACTER, ZONES, WATER_LEVEL } from "@/lib/game/data"
+import { terrainRadius } from "@/lib/game/terrain"
+import {
+  propCollision,
+  bridgeSurface,
+  corridorSurface,
+  groundOrDeck,
+  type PropHit,
+} from "@/lib/game/props"
+import {
+  BODY,
+  STRIDE_WALK,
+  STRIDE_RUN,
+  characterPose,
+  emptyPose,
+  footPlanZ,
+} from "@/lib/game/character"
 import { useGameStore } from "@/lib/game/store"
 import { playerState } from "@/lib/game/playerState"
-import { toonGradient } from "@/lib/game/toon"
+import { Character, AARAV } from "./Character"
 
-const MOVE_SPEED = 0.11
+/** x1.4 for the 1.6x world — a road takes ~1.15x the old time to walk */
+const MOVE_SPEED = 0.075
 const TURN_SPEED = 2.6
+/** world units, and neither the character nor the NPCs grew — unchanged */
 const TALK_DISTANCE = 2.4
-/** angular radius to enter a zone, and the wider one to leave it (hysteresis) */
-const ZONE_ENTER = 0.3
-const ZONE_EXIT = 0.4
+/**
+ * Angular radius to enter a zone, and the wider one to leave it (hysteresis).
+ * Scaled by 1/1.6 because the same world-unit footprint now subtends a smaller
+ * angle on the larger planet.
+ */
+const ZONE_ENTER = 0.21
+const ZONE_EXIT = 0.28
 const ZONE_CHECK_FRAMES = 30
 /** how far above the ground the camera is held when it would clip into terrain */
-const CAMERA_GROUND_CLEARANCE = 0.6
+const CAMERA_GROUND_CLEARANCE = 0.96
 /** per-frame easing of that lift, so the clamp glides instead of popping */
 const CAMERA_CLAMP_LERP = 0.35
 
 /** line-of-sight probe between the player's eye and the camera */
 const CAM_LOS_SAMPLES = 8
-const CAM_LOS_CLEARANCE = 0.35
-const CAM_MIN_DIST = 1.3
+const CAM_LOS_CLEARANCE = 0.56
+const CAM_MIN_DIST = 2.08
 /** pull in fast when the view is blocked, ease back out slowly */
 const CAM_LOS_IN_LERP = 0.4
 const CAM_LOS_OUT_LERP = 0.08
 
+/**
+ * The player as a standing capsule: the kurta is a 0.25 capsule and the satchel
+ * juts a little further, so 0.34 wraps the silhouette. Height covers feet to the
+ * top of the head.
+ */
+const PLAYER_RADIUS = 0.34
+const PLAYER_HEIGHT = 1.8
+/**
+ * Resolve passes per frame. One is enough in the open; a second and third let
+ * the player settle cleanly into an inside corner instead of jittering between
+ * two walls that each push them back into the other.
+ */
+const COLLIDE_PASSES = 3
+/**
+ * Ceiling on how far collision may shift the player in one frame, across all
+ * passes. A walk step is 0.154u, so a correction under this is indistinguishable
+ * from ordinary movement; without it, a first contact resolves its whole depth
+ * at once and reads as a shove. Anything deeper settles over the next frames.
+ */
+const MAX_PUSH = 0.15
+/**
+ * How far the player may be below a bridge deck and still be caught by it.
+ * The ramps meet the bank terrain exactly, so this only has to absorb a frame
+ * of downhill travel — large enough and you would get snapped up from the water.
+ */
+const DECK_SNAP = 0.4
+/**
+ * The same guard for the road, but sized to the road. Embankment fill reaches
+ * 0.84u, so DECK_SNAP's 0.4 would leave the player stranded under the deepest
+ * fills — exactly the stretches where the gap is worst.
+ */
+const ROAD_SNAP = 1.1
+
+/** scratch for the collision work — the resolve loop allocates nothing */
+const _hit: PropHit = { normal: new THREE.Vector3(), depth: 0 }
+
 /** scratch for the camera work — keeps the frame allocation-free */
 const _camDir = new THREE.Vector3()
 const _eye = new THREE.Vector3()
+const _footProbe = new THREE.Vector3()
+const _waterProbe = new THREE.Vector3()
+/** the last position known to be on solid footing, to fall back to */
+const _lastDry = new THREE.Vector3()
+/** stop this far short of the waterline, so he halts on the bank */
+const SHORE_MARGIN = 0.35
 const _losDir = new THREE.Vector3()
 const _losSample = new THREE.Vector3()
 const _losProbe = new THREE.Vector3()
@@ -62,6 +124,15 @@ export function Player() {
   const keys = useKeys()
   const groupRef = useRef<THREE.Group>(null)
   const bodyRef = useRef<THREE.Group>(null)
+  /** blended animation state: 0 idle, 1 walk, 2 run */
+  const gait = useRef(0)
+  const airBlend = useRef(0)
+  const carryBlend = useRef(0)
+  const pose = useRef(emptyPose())
+  const poseInput = useRef({
+    gait: 0, phase: 0, time: 0, air: 0, rising: 0, carry: 0,
+    groundL: 0, groundR: 0, slopeL: 0, slopeR: 0,
+  })
 
   const position = useRef(new THREE.Vector3(...INITIAL_CHARACTER.position))
   const velocity = useRef(new THREE.Vector3())
@@ -75,8 +146,16 @@ export function Player() {
   const setNearbyNpc = useGameStore((s) => s.setNearbyNpc)
   const carrying = useGameStore((s) => s.carrying)
 
-  // hit-test against where each npc is actually drawn, not the authored point
-  const npcVecs = useMemo(() => NPCS.map((n) => npcSurfacePosition(n.position)), [])
+  // hit-test where NpcLayer actually draws them: both lift onto the road, and
+  // a mismatch between the two is exactly what BUG-101 was
+  const npcVecs = useMemo(
+    () =>
+      NPCS.map((n) => {
+        const d = new THREE.Vector3(...n.position).normalize()
+        return d.clone().multiplyScalar(groundOrDeck(d))
+      }),
+    [],
+  )
 
   // zone entry detection: unit direction of each zone centre, plus the zone we
   // are currently inside (kept in a ref so this never re-renders the player)
@@ -114,7 +193,7 @@ export function Player() {
     return () => window.removeEventListener("keydown", onKey)
   }, [])
 
-  useFrame((_, rawDelta) => {
+  useFrame((state, rawDelta) => {
     const delta = Math.min(rawDelta, 1 / 30)
     const dt60 = delta * 60
     const k = keys.current
@@ -160,10 +239,56 @@ export function Player() {
     velocity.current.copy(tangent).addScaledVector(up, newRadial)
     position.current.addScaledVector(velocity.current, dt60)
 
-    // ground collision against the analytic terrain surface
+    // solid props: push out of whatever this step walked into, and drop the
+    // velocity heading into it, so the player slides along a wall rather than
+    // stopping dead against it
+    let pushLeft = MAX_PUSH
+    for (let pass = 0; pass < COLLIDE_PASSES && pushLeft > 0; pass++) {
+      if (!propCollision(position.current, PLAYER_RADIUS, PLAYER_HEIGHT, _hit)) break
+      const push = Math.min(_hit.depth, pushLeft)
+      position.current.addScaledVector(_hit.normal, push)
+      pushLeft -= push
+      // drop the velocity heading into the face even when the push was capped,
+      // so the player stops pressing deeper while the overlap works itself out
+      const into = velocity.current.dot(_hit.normal)
+      if (into < 0) velocity.current.addScaledVector(_hit.normal, -into)
+    }
+
+    // ---- the water.s edge is a wall.
+    //
+    // Aarav cannot swim, so any step whose destination is open water is
+    // refused and the tangential velocity killed, leaving him on the bank.
+    // Bridges and the road are explicitly exempt: where a deck or the
+    // corridor covers a spot he is on a SURFACE, not in the water, which is
+    // what keeps every crossing walkable.
+    {
+      const to = _waterProbe.copy(position.current).normalize()
+      const onStructure = bridgeSurface(to) !== null || corridorSurface(to) !== null
+      if (!onStructure && terrainRadius(to) < WATER_LEVEL + SHORE_MARGIN) {
+        // lengthSq guard: nothing to fall back to on the very first frame
+        if (_lastDry.lengthSq() > 1) position.current.copy(_lastDry)
+        const radialNow = velocity.current.dot(up)
+        velocity.current.copy(up).multiplyScalar(radialNow)
+      } else {
+        _lastDry.copy(position.current)
+      }
+    }
+
+    // ground collision: the terrain, or a bridge deck where one is overhead
     const dir = position.current.clone().normalize()
-    const groundR = terrainRadius(dir)
     const r = position.current.length()
+    let groundR = terrainRadius(dir)
+    // the road first: its deck is smoothed along its length and filled over
+    // hollows, so on a corridor the real ground can sit most of a unit below
+    // the asphalt. Without this the player walks that raw ground and sinks
+    // through the road they can see.
+    const roadR = corridorSurface(dir)
+    if (roadR !== null && roadR > groundR && r >= roadR - ROAD_SNAP) groundR = roadR
+    const deckR = bridgeSurface(dir)
+    // stand on a deck only when already at or above it — walking underneath a
+    // bridge must not snatch the player up onto it. Applied after the road so a
+    // bridge wins wherever both could claim the same ground.
+    if (deckR !== null && deckR > groundR && r >= deckR - DECK_SNAP) groundR = deckR
     if (r <= groundR) {
       position.current.copy(dir.multiplyScalar(groundR))
       grounded.current = true
@@ -185,13 +310,69 @@ export function Player() {
       groupRef.current.quaternion.slerp(targetQuat, 0.25)
     }
 
-    // little walking bob
+    // ---- character animation
+    //
+    // The gait phase advances with DISTANCE TRAVELLED, not with time: one
+    // stance carries the foot 2x stride backward relative to the body, so
+    // tying the cycle to ground distance makes the planted foot world-static.
+    // A time-driven cycle is exactly what foot skating is.
+    const tangentSpeed = velocity.current
+      .clone()
+      .sub(upNow.clone().multiplyScalar(velocity.current.dot(upNow)))
+      .length()
     const isMoving = moveInput !== 0 && grounded.current
-    stepPhase.current += isMoving ? delta * (sprint ? 16 : 10) : 0
-    if (bodyRef.current) {
-      bodyRef.current.position.y = isMoving ? Math.abs(Math.sin(stepPhase.current)) * 0.06 : 0
-      bodyRef.current.rotation.z = isMoving ? Math.sin(stepPhase.current) * 0.05 : 0
+    const gaitTarget = !isMoving ? 0 : sprint ? 2 : 1
+    gait.current += (gaitTarget - gait.current) * Math.min(1, delta * 9)
+    const runW = Math.max(0, Math.min(1, gait.current - 1))
+    const stride = STRIDE_WALK + (STRIDE_RUN - STRIDE_WALK) * runW
+    if (isMoving) {
+      // signed: walking backwards runs the cycle backwards
+      stepPhase.current += (Math.sign(moveInput) * tangentSpeed * dt60) / (4 * stride)
     }
+    airBlend.current += ((grounded.current ? 0 : 1) - airBlend.current) * Math.min(1, delta * 10)
+    carryBlend.current += ((carrying ? 1 : 0) - carryBlend.current) * Math.min(1, delta * 6)
+
+    // ground under each foot, so the planted foot meets a slope instead of
+    // hovering over it or sinking into it
+    const rootG = groundOrDeck(upNow)
+    const footGround = (lateral: number, ahead: number) => {
+      _footProbe
+        .copy(position.current)
+        .addScaledVector(right, lateral)
+        .addScaledVector(fwd, ahead)
+        .normalize()
+      const g = groundOrDeck(_footProbe) - rootG
+      // Asymmetric on purpose. Lifting a foot toward the hip costs no reach,
+      // so the uphill limit is generous (a tight one clipped the leading foot
+      // 0.24u into steep rising ground); reaching DOWN costs pelvis drop, so
+      // that side stays modest.
+      return Math.max(-0.35, Math.min(0.55, g))
+    }
+    const poseIn = poseInput.current
+    poseIn.gait = gait.current
+    poseIn.phase = stepPhase.current
+    poseIn.time = state.clock.elapsedTime
+    poseIn.air = airBlend.current
+    poseIn.rising = velocity.current.dot(upNow)
+    poseIn.carry = carryBlend.current
+    // the foot's forward offset is known from the phase alone, so the ground
+    // is sampled exactly under where the foot lands — no one-frame lag
+    const planL = footPlanZ(stepPhase.current, gait.current, "L")
+    const planR = footPlanZ(stepPhase.current, gait.current, "R")
+    poseIn.groundL = footGround(-BODY.hipX, planL)
+    poseIn.groundR = footGround(BODY.hipX, planR)
+    // ground pitch across the length of each shoe, so the ankle can lay the
+    // sole flat on the slope instead of burying its toe or heel in it
+    const HALF = BODY.footLen / 2
+    poseIn.slopeL = Math.atan2(
+      footGround(-BODY.hipX, planL + HALF) - footGround(-BODY.hipX, planL - HALF),
+      BODY.footLen,
+    )
+    poseIn.slopeR = Math.atan2(
+      footGround(BODY.hipX, planR + HALF) - footGround(BODY.hipX, planR - HALF),
+      BODY.footLen,
+    )
+    characterPose(poseIn, pose.current)
 
     // camera: trail behind the player along -forward, offset up
     const behind = forward.current.clone().multiplyScalar(-INITIAL_CHARACTER.relativeCameraPosition[2])
@@ -202,7 +383,7 @@ export function Player() {
     // hold the ideal camera above the ground it would otherwise slice into,
     // easing the lift in so cresting a hill glides rather than snaps
     _camDir.copy(camPos.current).normalize()
-    const camGround = terrainRadius(_camDir) + CAMERA_GROUND_CLEARANCE
+    const camGround = groundOrDeck(_camDir) + CAMERA_GROUND_CLEARANCE
     const camR = camPos.current.length()
     if (camR < camGround) {
       const k = Math.min(1, CAMERA_CLAMP_LERP * dt60)
@@ -221,7 +402,10 @@ export function Player() {
         const t = i / CAM_LOS_SAMPLES
         _losSample.copy(_eye).addScaledVector(_losDir, fullDist * t)
         _losProbe.copy(_losSample).normalize()
-        if (_losSample.length() < terrainRadius(_losProbe) + CAM_LOS_CLEARANCE) {
+        // groundOrDeck, not raw terrain: an embankment road is solid to the eye,
+        // and with the raw probe the camera would settle in the hollow BESIDE
+        // a filled road and stare through its side — the P43 black screens
+        if (_losSample.length() < groundOrDeck(_losProbe) + CAM_LOS_CLEARANCE) {
           blockedT = t
           break
         }
@@ -242,7 +426,7 @@ export function Player() {
 
     // final safety: the pulled-in camera must still not sit inside a hill
     _camDir.copy(_camFinal).normalize()
-    const finalGround = terrainRadius(_camDir) + CAMERA_GROUND_CLEARANCE
+    const finalGround = groundOrDeck(_camDir) + CAMERA_GROUND_CLEARANCE
     if (_camFinal.length() < finalGround) _camFinal.setLength(finalGround)
 
     camera.position.copy(_camFinal)
@@ -297,44 +481,7 @@ export function Player() {
   return (
     <group ref={groupRef}>
       <group ref={bodyRef}>
-        {/* legs */}
-        <mesh position={[0, 0.35, 0]} castShadow>
-          <cylinderGeometry args={[0.13, 0.13, 0.7, 8]} />
-          <meshToonMaterial color="#2b2723" gradientMap={toonGradient} />
-          <Outlines thickness={0.03} color="#2c2620" />
-        </mesh>
-        {/* kurta */}
-        <mesh position={[0, 0.98, 0]} castShadow>
-          <capsuleGeometry args={[0.25, 0.55, 4, 8]} />
-          <meshToonMaterial color="#3f7f5c" gradientMap={toonGradient} />
-          <Outlines thickness={0.03} color="#2c2620" />
-        </mesh>
-        {/* head */}
-        <mesh position={[0, 1.55, 0]} castShadow>
-          <sphereGeometry args={[0.22, 12, 12]} />
-          <meshToonMaterial color="#caa06e" gradientMap={toonGradient} />
-          <Outlines thickness={0.03} color="#2c2620" />
-        </mesh>
-        {/* hair */}
-        <mesh position={[0, 1.66, 0]}>
-          <sphereGeometry args={[0.23, 12, 12, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
-          <meshToonMaterial color="#241f19" gradientMap={toonGradient} />
-          <Outlines thickness={0.03} color="#2c2620" />
-        </mesh>
-        {/* satchel bag, always worn */}
-        <mesh position={[0.22, 1.0, -0.05]} rotation={[0, 0, 0.2]} castShadow>
-          <boxGeometry args={[0.28, 0.32, 0.16]} />
-          <meshToonMaterial color="#8a4a2c" gradientMap={toonGradient} />
-          <Outlines thickness={0.03} color="#2c2620" />
-        </mesh>
-        {/* carried parcel indicator */}
-        {carrying && (
-          <mesh position={[0, 1.95, 0]} castShadow>
-            <boxGeometry args={[0.22, 0.2, 0.22]} />
-            <meshToonMaterial color="#e0a53a" gradientMap={toonGradient} />
-            <Outlines thickness={0.03} color="#2c2620" />
-          </mesh>
-        )}
+        <Character pose={pose} skin={AARAV} carrying={!!carrying} />
       </group>
     </group>
   )
