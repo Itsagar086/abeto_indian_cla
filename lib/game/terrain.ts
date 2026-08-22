@@ -640,6 +640,20 @@ export type PlotGradeSite = {
   dir: THREE.Vector3
   radius: number
   /**
+   * How far this site's grading fades back to the natural landform. Defaults
+   * to PLOT_GRADE_RAMP. A civic pad is small and 3u is plenty; the palace
+   * terrace is ~25u across, and ending it in a 3u ramp is what made the
+   * palace read as a slab perched on a mesa -- the ground fell 5.16u within
+   * 4u of its base (measured). A wider ramp turns that edge into a slope.
+   */
+  ramp?: number
+  /**
+   * 0 (default) grades the ground; 1 grades ON TOP of it. A plinth inside a
+   * terrace is tier 1, so it blends over the terrace across its own ramp
+   * instead of fighting it for the same f.
+   */
+  tier?: number
+  /**
    * Force the level instead of sampling it. A row of shopfronts standing
    * shoulder to shoulder has to be ONE terrace: sampled per building, each
    * pad grades to its own ground and the "nearest wins" rule below puts a
@@ -647,7 +661,7 @@ export type PlotGradeSite = {
    */
   level?: number
 }
-let _plotGrades: { dir: THREE.Vector3; radius: number; level: number }[] = []
+let _plotGrades: { dir: THREE.Vector3; radius: number; ramp: number; tier: number; level: number }[] = []
 /** ramp width from pad edge back to natural ground, world units */
 export const PLOT_GRADE_RAMP = 3
 
@@ -656,7 +670,13 @@ export function registerPlotGrading(sites: PlotGradeSite[]) {
   // the road-graded (but plot-ungraded) ground at its own centre
   const grades = sites.map((s) => {
     const dir = s.dir.clone().normalize()
-    return { dir, radius: s.radius, level: s.level ?? terrainRadius(dir) }
+    return {
+      dir,
+      radius: s.radius,
+      ramp: s.ramp ?? PLOT_GRADE_RAMP,
+      tier: s.tier ?? 0,
+      level: s.level ?? terrainRadius(dir),
+    }
   })
   _plotGrades = grades
 }
@@ -670,12 +690,20 @@ export function registerPlotGrading(sites: PlotGradeSite[]) {
  */
 export function terrainRadius(dir: THREE.Vector3) {
   const nat = naturalRadius(dir)
-  // Water is never graded. Blending near the crossings either cut dry banks
-  // under the waterline or raised an earthen land bridge across the gorge
-  // floor (both measured) — the embankment simply stops at the water's edge,
-  // and the wet topology stays exactly the natural one the bridge spans were
-  // scanned from. Also skips the scan for most of the planet (ocean).
-  if (nat < WATER_LEVEL + 0.48) return nat
+  // Water is never ROAD-graded. Blending near the crossings either cut dry
+  // banks under the waterline or raised an earthen land bridge across the
+  // gorge floor (both measured) — the embankment simply stops at the water's
+  // edge, and the wet topology stays exactly the natural one the bridge spans
+  // were scanned from. Also skips the scan for most of the planet (ocean).
+  //
+  // It still passes through plotGrade, like the two far-from-road exits below.
+  // Returning raw `nat` here truncated every plot ramp the instant the natural
+  // ground crossed this line: behind the palace terrace the graded surface
+  // went 43.82 -> 34.04 in ONE metre, a 9.8u vertical face manufactured by
+  // this early-out rather than by the landscape. plotGrade only acts within a
+  // registered pad's radius + ramp, and pads are sited on dry ground, so what
+  // this admits is exactly the tail of an embankment running down to a shore.
+  if (nat < WATER_LEVEL + 0.48) return plotGrade(dir, nat, nat)
   const h = profileGrid()
   const { dirs, n, step } = METRO_LOOP
   // conservative angular window: GRADE_OUT at the lowest ground the loop sees
@@ -763,22 +791,42 @@ export function terrainRadius(dir: THREE.Vector3) {
 
 /** level the ground toward the nearest registered plot's pad level */
 function plotGrade(dir: THREE.Vector3, r: number, nat: number) {
-  let bestF = 0
-  let bestLevel = 0
+  /**
+   * Two-tier blending, not winner-takes-all.
+   *
+   * Plots keep mutual clearance, so within a tier "nearest wins" is still
+   * right. But a raised plinth sits INSIDE its terrace, and with one tier the
+   * terrace held f = 1 up to the plinth's edge, so the plinth's ramp never got
+   * to act and the step came out as a 0.55u cliff. Grading the terrace first
+   * and then blending the plinth over it across its own ramp turns that cliff
+   * into a walkable slope, which is what makes the palace steps climbable.
+   */
+  let baseF = 0
+  let baseLevel = 0
+  let topF = 0
+  let topLevel = 0
   for (let i = 0; i < _plotGrades.length; i++) {
     const g = _plotGrades[i]
     const d = dir.dot(g.dir)
     if (d < 0.9) continue
     const lat = Math.acos(Math.min(1, d)) * nat
-    const x = (lat - g.radius) / PLOT_GRADE_RAMP
+    const x = (lat - g.radius) / g.ramp
     const f = x <= 0 ? 1 : x >= 1 ? 0 : 1 - x * x * (3 - 2 * x)
-    // nearest wins: plots keep mutual clearance, but two RAMPS may brush
-    if (f > bestF) {
-      bestF = f
-      bestLevel = g.level
+    if (f <= 0) continue
+    if (g.tier) {
+      if (f > topF) {
+        topF = f
+        topLevel = g.level
+      }
+    } else if (f > baseF) {
+      baseF = f
+      baseLevel = g.level
     }
   }
-  return bestF > 0 ? r + (bestLevel - r) * bestF : r
+  let out = r
+  if (baseF > 0) out += (baseLevel - out) * baseF
+  if (topF > 0) out += (topLevel - out) * topF
+  return out
 }
 
 /** convenience: surface radius for an arbitrary (unnormalised) position */

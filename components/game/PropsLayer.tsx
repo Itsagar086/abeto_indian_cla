@@ -35,6 +35,192 @@ const LAMP_OFF = 0.15
  * 0.3) the downhill rim hovered up to ~3u in the air — the floating octagons
  * of the P47 screenshots. Every vertex now sits on the ground it covers.
  */
+/**
+ * A rectangle of paving or planting draped onto the ground it covers.
+ *
+ * Every vertex is sampled off the terrain and lifted `box.top`, so the surface
+ * follows the terrace exactly and the player walks over it with no step at
+ * all. It carries no collider — this IS the ground.
+ *
+ * `box.hx` / `box.hz` are WORLD half-extents; `colorA` fills, `colorB` edges.
+ */
+function PavedStrip({ p }: { p: PlacedProp }) {
+  const geo = useMemo(() => {
+    const hx = p.box?.hx ?? 1
+    const hz = p.box?.hz ?? 1
+    /**
+     * A drape samples the ground at its own nodes and interpolates flat
+     * between them, so it can cut UNDER the surface it is meant to cover. Ray
+     * cast against the drawn planet mesh, a 0.03u lift on 1u nodes left 3.96%
+     * of the estate paving underground with 0.047u of mean clearance -- the
+     * planet won those pixels on some frames and the paving on others, which
+     * is the flicker.
+     *
+     * Halving the node spacing helps, but most of the relief here is terrain
+     * micro-noise finer than either surface resolves, so the lift does the
+     * work: at 0.12u nothing sits below the mesh at all (worst +0.0017u), and
+     * 0.12u is 6cm on a 1.8u player -- a kerb, not a step.
+     */
+    const lift = Math.max(p.box?.top ?? 0, 0.12)
+    const NX = Math.max(2, Math.ceil(hx * 2))
+    const NZ = Math.max(2, Math.ceil(hz * 2))
+    const quat = new THREE.Quaternion(p.quaternion.x, p.quaternion.y, p.quaternion.z, p.quaternion.w)
+    const pos: number[] = []
+    const col: number[] = []
+    const idx: number[] = []
+    const inner = new THREE.Color(p.colorA)
+    const edge = new THREE.Color(p.colorB ?? p.colorA)
+    const v = new THREE.Vector3()
+    for (let i = 0; i <= NX; i++) {
+      for (let j = 0; j <= NZ; j++) {
+        v.set(((i / NX) * 2 - 1) * hx, 0, ((j / NZ) * 2 - 1) * hz)
+          .applyQuaternion(quat)
+          .add(p.position)
+          .normalize()
+        const h = terrainRadius(v) + lift
+        pos.push(v.x * h, v.y * h, v.z * h)
+        const rim = i === 0 || i === NX || j === 0 || j === NZ
+        const c = rim ? edge : inner
+        col.push(c.r, c.g, c.b)
+      }
+    }
+    const W = NZ + 1
+    for (let i = 0; i < NX; i++) {
+      for (let j = 0; j < NZ; j++) {
+        const a = i * W + j
+        idx.push(a, a + 1, a + W, a + 1, a + W + 1, a + W)
+      }
+    }
+    const g = new THREE.BufferGeometry()
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3))
+    g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3))
+    g.setIndex(idx)
+    g.computeVertexNormals()
+    return g
+  }, [p])
+  return (
+    <mesh geometry={geo} receiveShadow>
+      {/* biased toward the camera, as the road skirt is: a drape samples the
+          ground at its own nodes and interpolates flat between them, so it can
+          cut under the surface it covers (measured 12% of the estate paving,
+          worst 0.097u). The bias settles who wins the depth test the same way
+          every frame instead of letting it alternate with the view angle. */}
+      <meshToonMaterial
+        vertexColors
+        gradientMap={toonGradient}
+        polygonOffset
+        polygonOffsetFactor={-2}
+        polygonOffsetUnits={-2}
+      />
+    </mesh>
+  )
+}
+
+/**
+ * A continuous clipped hedge, built here rather than assembled from a GLB.
+ *
+ * Stone Wall segments could not follow the terrace: fixed 6.9u blocks gapped
+ * at every corner and, measured along their own length, floated or buried by
+ * up to 1.41u. A hedge run is ONE mesh whose base is sampled off the ground
+ * at every station and sunk 0.25u, so it cannot float and cannot leave a
+ * seam. `box.hx` is the run's half-length, `box.hz` its half-thickness,
+ * `box.top` its height; `colorA` is the body, `colorB` the clipped top.
+ * DoubleSide because a hand-wound prism is one winding slip from rendering
+ * as an unlit black wall — front-facing decides the normal instead.
+ */
+function HedgeRun({ p }: { p: PlacedProp }) {
+  const geo = useMemo(() => {
+    const hx = p.box?.hx ?? 1
+    const hz = p.box?.hz ?? 0.4
+    // box.top sizes the COLLIDER band (ground-aware, per piece); the visible
+    // clipped height is a constant -- every hedge on the estate is 1.9u
+    const H = 1.9
+    const N = Math.max(2, Math.ceil(hx))
+    const quat = new THREE.Quaternion(p.quaternion.x, p.quaternion.y, p.quaternion.z, p.quaternion.w)
+    const body = new THREE.Color(p.colorA)
+    const top = new THREE.Color(p.colorB ?? p.colorA)
+    const pos: number[] = []
+    const col: number[] = []
+    const idx: number[] = []
+    const v = new THREE.Vector3()
+    const rows: THREE.Vector3[][] = []
+    for (let i = 0; i <= N; i++) {
+      const fx = (i / N) * 2 - 1
+      const st: THREE.Vector3[] = []
+      for (const sz of [-1, 1]) {
+        v.set(fx * hx, 0, sz * hz).applyQuaternion(quat).add(p.position).normalize()
+        const g = terrainRadius(v)
+        st.push(v.clone().multiplyScalar(g - 0.25), v.clone().multiplyScalar(g + H))
+      }
+      rows.push([st[0], st[1], st[3], st[2]])
+    }
+    const push = (a: THREE.Vector3, c: THREE.Color) => {
+      pos.push(a.x, a.y, a.z)
+      col.push(c.r, c.g, c.b)
+    }
+    for (const r of rows) {
+      push(r[0], body)
+      push(r[1], top)
+      push(r[2], top)
+      push(r[3], body)
+    }
+    /**
+     * Every triangle is wound OUTWARD, checked against the run's own axis.
+     *
+     * The prism was drawn DoubleSide because a hand-wound strip is one sign
+     * slip from an unlit black wall. That hid the slip instead of fixing it:
+     * with inconsistent winding, which triangles count as front-facing depends
+     * on where the camera is, so the wall's shading flipped between light
+     * stone and near-black as the camera turned. Deriving each face's winding
+     * from geometry — compare its normal to the outward direction, swap two
+     * indices if it points inward — makes the mesh genuinely single-sided and
+     * the shading view-independent.
+     */
+    const centre = new THREE.Vector3()
+    for (const r of rows) for (const pt of r) centre.add(pt)
+    centre.multiplyScalar(1 / (rows.length * 4))
+    const A = new THREE.Vector3()
+    const B = new THREE.Vector3()
+    const Nrm = new THREE.Vector3()
+    const Out = new THREE.Vector3()
+    const tri = (a: number, b: number, c: number) => {
+      const pa = new THREE.Vector3(pos[a * 3], pos[a * 3 + 1], pos[a * 3 + 2])
+      const pb = new THREE.Vector3(pos[b * 3], pos[b * 3 + 1], pos[b * 3 + 2])
+      const pc = new THREE.Vector3(pos[c * 3], pos[c * 3 + 1], pos[c * 3 + 2])
+      Nrm.crossVectors(A.subVectors(pb, pa), B.subVectors(pc, pa))
+      Out.copy(pa).add(pb).add(pc).multiplyScalar(1 / 3).sub(centre)
+      if (Nrm.dot(Out) >= 0) idx.push(a, b, c)
+      else idx.push(a, c, b)
+    }
+    const W = 4
+    for (let i = 0; i < N; i++) {
+      for (let k = 0; k < 3; k++) {
+        const a = i * W + k
+        tri(a, a + W, a + 1)
+        tri(a + 1, a + W, a + W + 1)
+      }
+    }
+    const capA = 0
+    const capB = N * W
+    tri(capA, capA + 1, capA + 2)
+    tri(capA, capA + 2, capA + 3)
+    tri(capB, capB + 1, capB + 2)
+    tri(capB, capB + 2, capB + 3)
+    const g = new THREE.BufferGeometry()
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3))
+    g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3))
+    g.setIndex(idx)
+    g.computeVertexNormals()
+    return g
+  }, [p])
+  return (
+    <mesh geometry={geo} castShadow receiveShadow>
+      <meshToonMaterial vertexColors gradientMap={toonGradient} side={THREE.DoubleSide} />
+      <Ink />
+    </mesh>
+  )
+}
+
 function CivicPad({ p }: { p: PlacedProp }) {
   const PAD_SHOW = 0.02
   const RIM_SHOW = 0.01
@@ -91,7 +277,18 @@ function CivicPad({ p }: { p: PlacedProp }) {
   }, [p])
   return (
     <mesh geometry={geo} receiveShadow>
-      <meshToonMaterial vertexColors gradientMap={toonGradient} />
+      {/* biased toward the camera, as the road skirt is: a drape samples the
+          ground at its own nodes and interpolates flat between them, so it can
+          cut under the surface it covers (measured 12% of the estate paving,
+          worst 0.097u). The bias settles who wins the depth test the same way
+          every frame instead of letting it alternate with the view angle. */}
+      <meshToonMaterial
+        vertexColors
+        gradientMap={toonGradient}
+        polygonOffset
+        polygonOffsetFactor={-2}
+        polygonOffsetUnits={-2}
+      />
     </mesh>
   )
 }
@@ -185,7 +382,7 @@ for (const b of GLB_BUILDINGS) useGLTF.preload(b.path, DRACO_PATH)
  */
 const glbCache = new Map<string, { geo: THREE.BufferGeometry; hx: number; hz: number }>()
 
-function mergedGlb(scene: THREE.Object3D, key: string, part?: string) {
+function mergedGlb(scene: THREE.Object3D, key: string, part?: string, normalize = false) {
   const hit = glbCache.get(key)
   if (hit) return hit
   scene.updateMatrixWorld(true)
@@ -229,6 +426,24 @@ function mergedGlb(scene: THREE.Object3D, key: string, part?: string) {
     else chunks.push(g.toNonIndexed())
   }
   const geo = chunks.length ? mergeGeometries(chunks, false)! : new THREE.BufferGeometry()
+  if (normalize && geo.attributes.color) {
+    // rescale to a mean luminance of 1: every relative difference between the
+    // model's own materials survives, but the overall value is handed to the
+    // tint. Without it a dark-baked model is black whatever tint it is given.
+    const col = geo.attributes.color as THREE.BufferAttribute
+    let sum = 0
+    for (let i = 0; i < col.count; i++) {
+      sum += 0.2126 * col.getX(i) + 0.7152 * col.getY(i) + 0.0722 * col.getZ(i)
+    }
+    const mean = sum / Math.max(1, col.count)
+    if (mean > 1e-4) {
+      const k = 1 / mean
+      for (let i = 0; i < col.count; i++) {
+        col.setXYZ(i, Math.min(2, col.getX(i) * k), Math.min(2, col.getY(i) * k), Math.min(2, col.getZ(i) * k))
+      }
+      col.needsUpdate = true
+    }
+  }
   const out = {
     geo,
     hx: (box.max.x - box.min.x) / 2,
@@ -251,23 +466,44 @@ function mergedGlb(scene: THREE.Object3D, key: string, part?: string) {
  */
 function GlbFleet({ path, part, items }: { path: string; part?: string; items: PlacedProp[] }) {
   const { scene } = useGLTF(path, DRACO_PATH)
-  const merged = useMemo(() => mergedGlb(scene, `${path}|${part ?? ""}`, part), [scene, path, part])
-  const { matrices, colors, plinths } = useMemo(() => {
+  const norm = items[0]?.normalize === true
+  const merged = useMemo(
+    () => mergedGlb(scene, `${path}|${part ?? ""}|${norm ? "n" : ""}`, part, norm),
+    [scene, path, part, norm],
+  )
+  const { matrices, colors, plinths, courses } = useMemo(() => {
     const matrices: THREE.Matrix4[] = []
     const colors: THREE.Color[] = []
     const plinths: THREE.Matrix4[] = []
+    const courses: THREE.Matrix4[] = []
     const scale = new THREE.Vector3()
     for (const p of items) {
       const world = new THREE.Matrix4().compose(p.position, p.quaternion, scale.setScalar(p.scale))
       matrices.push(world)
       colors.push(new THREE.Color(p.tint ?? "#ffffff"))
-      if (p.plinth !== false) {
+      if (p.basecourse) {
+        // a real stone base course, in WORLD units: `pad` wider than the
+        // footprint each side, `h` tall, sunk 0.25 into the terrace — the
+        // palace's answer to the thin plinth slab it used to hover on
+        const { pad, h } = p.basecourse
+        courses.push(
+          partMatrix(
+            world,
+            0,
+            (h / 2 - 0.25) / p.scale,
+            0,
+            merged.hx * 2 + (2 * pad) / p.scale,
+            h / p.scale,
+            merged.hz * 2 + (2 * pad) / p.scale,
+          ),
+        )
+      } else if (p.plinth !== false) {
         plinths.push(
           partMatrix(world, 0, 0.04 - 0.3, 0, merged.hx * 2 + 0.6, 0.6, merged.hz * 2 + 0.6),
         )
       }
     }
-    return { matrices, colors, plinths }
+    return { matrices, colors, plinths, courses }
   }, [items, merged])
 
   const ref = useRef<THREE.InstancedMesh>(null)
@@ -297,6 +533,13 @@ function GlbFleet({ path, part, items }: { path: string; part?: string; items: P
         <InstancedPart matrices={plinths} receiveShadow>
           <boxGeometry args={[1, 1, 1]} />
           <meshToonMaterial color="#cfc4ae" gradientMap={toonGradient} />
+        </InstancedPart>
+      )}
+      {courses.length > 0 && (
+        <InstancedPart matrices={courses} castShadow receiveShadow>
+          <boxGeometry args={[1, 1, 1]} />
+          {/* warm sandstone, a shade under the palace cream */}
+          <meshToonMaterial color="#cbb897" gradientMap={toonGradient} />
         </InstancedPart>
       )}
     </>
@@ -541,6 +784,12 @@ function PropInstance({ p }: { p: PlacedProp }) {
           </mesh>
         </group>
       )
+    case "paved-strip":
+      // draped onto the ground it covers — see PavedStrip
+      return <PavedStrip p={p} />
+    case "hedge-run":
+      // one continuous mesh that hugs the ground — see HedgeRun
+      return <HedgeRun p={p} />
     case "civic-pad":
       // draped onto the ground it covers — see CivicPad
       return <CivicPad p={p} />

@@ -48,6 +48,8 @@ export type PropKind =
   | "temple-steps"
   | "civic-pad"
   | "glb-building"
+  | "hedge-run"
+  | "paved-strip"
   | "cow"
   | "cat"
   | "stall-counter"
@@ -91,6 +93,23 @@ export type PlacedProp = {
    * is keyed by kind.
    */
   box?: { hx: number; hz: number; top: number }
+  /**
+   * Walk-through props: the driveway paving is a surface underfoot, not an
+   * obstacle, so it must never block the player. Checked in colliders().
+   */
+  noCollider?: boolean
+  /**
+   * Rescale the model's baked colours so the TINT governs its value. Without
+   * it the tint multiplies whatever the artist baked, and a model authored
+   * dark comes out black however it is tinted.
+   */
+  normalize?: boolean
+  /**
+   * A visible stone base course under a building: a box `pad` world units
+   * wider than the footprint on each side and `h` tall, sunk into the ground.
+   * The palace uses it so its base meets masonry instead of a grass seam.
+   */
+  basecourse?: { pad: number; h: number }
 }
 
 const PALETTE: Record<string, [string, string][]> = {
@@ -1861,9 +1880,9 @@ export function buildProps(): PlacedProp[] {
   // the gate ensemble on bearing 0, which placePalace() lines its approach up
   // with. The old procedural `palace` box-and-cone stood here and was deleted
   // in P57 — palace_.glb now occupies that ground.
-  add("haveli-arch", "haveli", 0, 1.1, 1.0, 301)
-  add("lamp-post", "haveli", 0.2, 1.0, 1, 302)
-  add("lamp-post", "haveli", -0.2, 1.0, 1, 303)
+  // the gate arch and the drive lamps are placed by placePalaceEstate(), in
+  // the compound wall and along the driveway -- the scatter versions stood on
+  // open grass leading nowhere
   add("flag", "haveli", 0.05, 0.25, 1.1, 304)
 
   // --- mill: rows of factory blocks
@@ -1936,8 +1955,16 @@ export function buildProps(): PlacedProp[] {
   placeZoneBuildings(props)
   placePalace(props)
   gradeBuildingPads(props)
+  // AFTER the grading: the estate's furniture (hedge, tiles, gate, palms,
+  // car) seats on the FINAL ground. Placed before it, everything would stand
+  // on pre-grade heights and the re-seat pass would skip the deliberately
+  // sunk paving.
+  placePalaceEstate(props)
   placeStairs(props)
   placeRoadside(props)
+  // last: sweep strays out of the estate -- roadside scatter runs after the
+  // compound exists and cannot test against it otherwise
+  sweepPalaceEstate(props)
 
   return props
 }
@@ -2214,6 +2241,8 @@ export type ModelSpec = {
   low?: boolean
   /** trees and street pieces stand on soil, not on a foundation slab */
   plinth?: boolean
+  /** rescale baked colours so the tint governs — see PlacedProp.normalize */
+  normalize?: boolean
   /** local +Z runs ALONG the frontage line instead of facing it (vehicles) */
   faceAlong?: boolean
   /** collider half-extents in MODEL units, when the bbox lies (palm fronds) */
@@ -2248,7 +2277,7 @@ export const MODELS: Record<string, ModelSpec> = {
   "neon-blade": { path: `${M}hotel-neon-blade.glb`, src: [1.34, 6.484, 0.98], scale: 1.15 },
   workshop: { path: `${M}Big Building by Quaternius.glb`, src: [4.705, 5.677, 4.391], scale: 1.3 },
   stoop: { path: `${M}Autumn Stoop_door.glb`, src: [1.491, 2.145, 1.114], scale: 2.6 },
-  palace: { path: `${M}palace_.glb`, src: [29.085, 22.716, 38.855], scale: 0.4 },
+  palace: { path: `${M}palace_.glb`, src: [29.085, 22.716, 38.855], scale: 0.46 },
 
   /* --- trees ----------------------------------------------------------- */
   palm1: {
@@ -2310,6 +2339,9 @@ export const MODELS: Record<string, ModelSpec> = {
   sedan: {
     path: `${M}car-sedan-01.glb`, src: [1.157, 0.809, 2.938], scale: 1.0,
     low: true, plinth: false, faceAlong: true, pad: false,
+    // the model bakes near-black paint; without this the tint multiplies it
+    // and every car on the planet comes out black
+    normalize: true,
   },
   "police-car": {
     path: `${M}Police Car.glb`, src: [1.778, 1.239, 3.73], scale: 1.0,
@@ -2585,7 +2617,7 @@ export function zoneBuildReport() {
   return _zoneBuilt
 }
 /** pads this pass wants graded level, handed to terrain.ts with the civic ones */
-export type BuildPad = { dir: THREE.Vector3; radius: number; level?: number }
+export type BuildPad = { dir: THREE.Vector3; radius: number; level?: number; ramp?: number; tier?: number }
 let _buildPads: BuildPad[] = []
 export function buildPadReport() {
   return _buildPads
@@ -2960,6 +2992,19 @@ function placeZoneBuildings(props: PlacedProp[]) {
           // 2.69u plinth at the ghat came from.
           if (rel.lo < WATER_LEVEL + 0.9) { _rej.wet++; continue }
           if (!footprintOffRoad(at, quat, hl, hd)) { _rej.corridor++; continue }
+          // `Big Building by Quaternius` is a brown Victorian block with a
+          // portico. A workshop frontage line slid it to 16.2u from the
+          // palace, where it has no business standing. It alone is barred
+          // from the haveli neighbourhood -- a blanket keep-out here cost
+          // nine legitimate placements in other zones (30/64 -> 21/64).
+          if (
+            it.model === "workshop" &&
+            _haveliDir &&
+            f.dir.angleTo(_haveliDir) * g < HAVELI_KEEPOUT
+          ) {
+            _rej.plot++
+            continue
+          }
           // The chain is stepped off the accepted centre in the building's own
           // frame. Re-solving each disc's position on the frontage line looked
           // tidier but the true-distance solve is not continuous in s, so a
@@ -3123,118 +3168,429 @@ export function terraceReport() {
 }
 
 /**
- * Bengaluru Palace and its grounds.
+ * Bengaluru Palace: claim the land, clear it, then build the estate.
  *
- * The palace is the zone's CENTREPIECE, so it is sited by ring search out
- * from the haveli centre rather than hung on a frontage line — the arterial
- * was rerouted past the hubs in P54 and the zone centres are the open ground
- * that reroute created. Everything else is then laid out on the approach
- * axis: the great-circle line from the palace door to the nearest point of
- * the road.
+ * P60 inverts the order. The estate rectangle is computed from what a palace
+ * NEEDS — facade, forecourt, lawn on all sides, an approach — and only then
+ * matched against the ground. Everything standing inside the claim is removed,
+ * whatever system put it there. Nothing is built around anything.
  *
- *      road ── gate gap in the boundary wall ── approach ── forecourt ── door
- *                        cypresses and lamps flanking
- *                     lawn between the wall and the palace face
+ * What a palace needs at this scale, and what haveli will actually hold:
+ *
+ *   ideal    31.1 x 37.4u   full lawn (half the facade), 8u forecourt, 10u drive
+ *   held     24.9 x 27.1u   the largest rectangle in the zone that is dry, off
+ *                           every road, clear of all 20 villager spawns, and
+ *                           whose gate edge stands 9u off the carriageway
+ *
+ * The 0.70 rectangle (26.4 x 29.7u) places, but only over a villager spawn,
+ * and spawns are weight-1 terrain anchors that cannot move — so 0.60 it is,
+ * rotated 10 degrees off the roadward bearing to find it.
+ *
+ * Layout, +u toward the road:
+ *
+ *   -BACK  wall .. lawn .. PALACE on its plinth .. steps .. FORECOURT .. drive .. GATE  +FRONT
+ *                     parking bay in the side lawn      palm avenue in matched pairs
  */
+export let PALACE_FRAME: {
+  dir: THREE.Vector3
+  axis: THREE.Vector3
+  lat: THREE.Vector3
+  level: number
+  back: number
+  front: number
+  hw: number
+  halfU: number
+  halfV: number
+  /** the forecourt depth and driveway length this claim actually got */
+  fore: number
+  drive: number
+} | null = null
+
+/**
+ * How far the terrace blends back into the hillside.
+ *
+ * Every site in this zone that can hold the estate stands on a slope -- the
+ * gentlest measured 2.82u of fall per 3u (42 deg), the one chosen 3.01u
+ * (45 deg). A terrace that stops dead at 6u leaves the palace on a pillar
+ * above that, which is what "floating" actually looks like. A smoothstep of
+ * width w carrying a fall of h peaks at 1.5h/w, so 22u turns a 7u drop into a
+ * 25 deg bank instead of a 45 deg face. Pads whose blend would reach the road
+ * take a shorter one; pads with no room at all are skipped, as before.
+ */
+const SKIRT_RAMP = 22
+/**
+ * How far from the haveli zone centre `Big Building by Quaternius` is barred.
+ * The estate claim reaches ~26u from the zone centre, so 40u keeps that one
+ * model well clear of the palace grounds.
+ */
+const HAVELI_KEEPOUT = 40
+const _haveliDir = (() => {
+  const z = ZONES.find((x) => x.id === "haveli")
+  return z ? new THREE.Vector3(...z.center).normalize() : null
+})()
+/** how far inside the claim the compound wall runs */
+const WALL_INSET = 1.2
+
 function placePalace(props: PlacedProp[]) {
   const zone = ZONES.find((z) => z.id === "haveli")
   if (!zone) return
   const m = MODELS.palace
+  // local +X is aimed down the approach, so the model's 38.9u axis runs ACROSS
+  // the estate and its 29.1u axis runs back from the road: broadside frontage
+  const halfU = (m.src[0] / 2) * m.scale
+  const halfV = (m.src[2] / 2) * m.scale
+
+  /**
+   * The claim, stepped down until the zone will hold it. Each set is
+   * [side lawn, back lawn, forecourt, driveway]; the plinth and its steps
+   * (2.25u) are added on top, because the arrival is part of the front.
+   */
+  const CLAIMS: [number, number, number, number][] = [
+    [halfV * 1.0, 7.8, 8.0, 10.0], // what a palace wants
+    [halfV * 0.8, 6.0, 6.4, 8.0],
+    [halfV * 0.65, 5.0, 5.4, 6.8],
+    [halfV * 0.55, 4.2, 4.8, 5.8],
+    [halfV * 0.45, 3.4, 4.2, 5.0],
+    [halfV * 0.36, 2.8, 3.6, 4.4],
+    [halfV * 0.28, 2.2, 3.0, 3.6],
+    [halfV * 0.2, 1.8, 2.4, 3.0],
+  ]
+  const ARRIVAL = 2.25
+  let LAWN_SIDE = 0
+  let LAWN_BACK = 0
+  let FORE = 0
+  let DRIVE = 0
+  let BACK = 0
+  let FRONT = 0
+  let HW = 0
+  let claimIndex = 0
+
   const c = new THREE.Vector3(...zone.center).normalize()
-  const R = terrainRadius(c)
-  const halfDepth = acrossHalf(m)
-  const halfWide = alongHalf(m)
+  const R0 = terrainRadius(c)
   const t1 = Math.abs(c.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)
   const u0 = new THREE.Vector3().crossVectors(t1, c).normalize()
   const v0 = new THREE.Vector3().crossVectors(c, u0).normalize()
 
-  let best: {
-    dir: THREE.Vector3
-    quat: THREE.Quaternion
-    axis: THREE.Vector3
-    sweep: PlacedProp[]
-    ring: number
-  } | null = null
+  /**
+   * How far the land falls away from a centre within 24u -- the ONLY metric
+   * that matches what a camera actually sees.
+   *
+   * The estate scored its surroundings 6u out and came back "flat", while the
+   * ground kept falling to 12.51u by 24u: a mound TALLER THAN THE PALACE
+   * ITSELF (10.45u). That is the whole reason the palace read as standing in
+   * the sky -- not a gap under its base, which measured 0.000u throughout.
+   *
+   * Depends only on the centre, so it is cached and shared across every claim
+   * size and rotation: 111k samples for the whole search instead of 776k.
+   */
+  const _fallCache = new Map<number, { lo: number; wet: boolean; cliff: number }>()
+  const groundAround = (key: number, dir: THREE.Vector3, g: number) => {
+    const hit = _fallCache.get(key)
+    if (hit !== undefined) return hit
+    let lo = g
+    let wet = false
+    let cliff = 0
+    for (let b = 0; b < 16; b++) {
+      const an = (b / 16) * Math.PI * 2
+      const w = u0.clone().multiplyScalar(Math.cos(an)).addScaledVector(v0, Math.sin(an))
+      w.addScaledVector(dir, -w.dot(dir))
+      if (w.lengthSq() < 1e-12) continue
+      w.normalize()
+      let prev: number | null = null
+      for (let dd = 6; dd <= 24.01; dd += 1.5) {
+        const d = dd
+        const r = terrainRadius(dir.clone().addScaledVector(w, d / g).normalize())
+        /**
+         * STEEPNESS, not total fall. A hillside losing 12u gently is a hill; a
+         * hillside losing 5u in 3u is a cliff, and a palace above a cliff is
+         * what reads as flying. Measured per 3u so the number is comparable to
+         * the palace's own 10.45u height.
+         */
+        const vis = Math.max(r, WATER_LEVEL)
+        if (prev !== null) cliff = Math.max(cliff, ((prev - vis) / 1.5) * 3)
+        prev = vis
+        /**
+         * Water is the DEEPEST fall there is, not an absent one. Skipping
+         * sub-waterline samples scored every coastal site as perfectly flat
+         * (flatFloor 0.00 at 31.2u out, ringed by sea), which filled the
+         * shortlist with 2330 drowned centres, failed all eight claim sizes,
+         * and dropped the search straight back onto the mound it started on.
+         * What a camera sees there is the water surface, so clamp to it.
+         */
+        lo = Math.min(lo, Math.max(r, WATER_LEVEL))
+        /**
+         * A shoreline within 16u is disqualifying, not merely flat. Clamping
+         * alone still ranked drowned BASINS best -- ground that does not fall
+         * because it is already at the bottom -- and all 2161 of them failed
+         * the claim probe on water.
+         */
+        /**
+         * Water AND tarmac disqualify a centre here, not just water. Road
+         * corridors are the flattest ground on this planet by construction, so
+         * ranking by gentleness put all 200 shortlisted centres on the
+         * carriageway -- where the claim probe then rejected every one of them
+         * and the search fell back to the mound it started on.
+         */
+        if (d <= 16 && (r < WATER_LEVEL + 1 || corridorSurface(dir.clone().addScaledVector(w, d / g).normalize()) !== null)) wet = true
+      }
+    }
+    const out = { lo, wet, cliff }
+    _fallCache.set(key, out)
+    return out
+  }
 
-  // Graded passes: first insist on room for a real approach between the door
-  // and the road, then drop that, then allow the pad to be cut deeper. A
-  // palace with a 4u drive is not a palace, but no palace at all is worse.
-  const PASSES = [
-    { approach: 9, relief: 4.8 },
-    { approach: 0, relief: 4.8 },
-    { approach: 0, relief: 7.0 },
-  ]
-  let usedPass = -1
-  for (let pi = 0; pi < PASSES.length; pi++) {
-  if (best) break
-  const { approach: wantApproach, relief: maxRelief } = PASSES[pi]
-  usedPass = pi
-  for (let ring = 0; ring <= 46 && !best; ring++) {
-    const rr = ring * 0.7
-    const steps = ring === 0 ? 1 : 12 + ring * 3
-    for (let si = 0; si < steps && !best; si++) {
-      const ang = (si / steps) * Math.PI * 2
+  type Cand = {
+    dir: THREE.Vector3
+    axis: THREE.Vector3
+    lat: THREE.Vector3
+    drop: number
+    apron: number
+    fall: number
+    cliff: number
+    score: number
+    ring: number
+    rot: number
+  }
+  let best: Cand | null = null
+
+  /**
+   * One candidate per claim size, then a choice between them.
+   *
+   * This used to stop at the FIRST size that fitted, which is why the estate
+   * sat on a 4.40u mesa: the largest claim that fitted was not remotely the
+   * flattest, and nothing ever looked at the smaller ones. Measured best fill
+   * by size: 6.53u / 4.40u / 2.99u / 2.82u. Two sizes down is worth 1.6u of
+   * mesa.
+   */
+  const cands: (Cand & { ci: number })[] = []
+  /**
+   * Every centre in the disc, surveyed ONCE.
+   *
+   * The claim-set loop used to sit outside this, so a centre's 33
+   * `arterialDistance` calls were repeated for all eight sizes -- 1.2M road
+   * queries, and the search stopped finishing. Surveying first and sizing
+   * second costs one pass.
+   */
+  const CENTRES: {
+    dir: THREE.Vector3
+    g: number
+    axis0: THREE.Vector3
+    rr: number
+    fall: number
+    wet: boolean
+    cliff: number
+  }[] = []
+  for (let ring = 0; ring <= 46; ring++) {
+    const rr = ring * 0.8
+    const steps = ring === 0 ? 1 : 8 + ring * 4
+    for (let si = 0; si < steps; si++) {
+      const a = (si / steps) * Math.PI * 2
       const dir = c
         .clone()
-        .addScaledVector(u0, (Math.cos(ang) * rr) / R)
-        .addScaledVector(v0, (Math.sin(ang) * rr) / R)
+        .addScaledVector(u0, (Math.cos(a) * rr) / R0)
+        .addScaledVector(v0, (Math.sin(a) * rr) / R0)
         .normalize()
       _prej.tried++
       const g = terrainRadius(dir)
-      if (g < WATER_LEVEL + 1.5) {
+      if (g < WATER_LEVEL + 2) {
         _prej.wet++
         continue
       }
-      if (slopeAt(dir, g) > 0.7) {
-        _prej.slope++
-        continue
+      // the roadward bearing, then rotations off it
+      let axis0: THREE.Vector3 | null = null
+      let bestAd = arterialDistance(dir)
+      for (let ai = 0; ai < 32; ai++) {
+        const an = (ai / 32) * Math.PI * 2
+        const w = u0.clone().multiplyScalar(Math.cos(an)).addScaledVector(v0, Math.sin(an))
+        w.addScaledVector(dir, -w.dot(dir))
+        if (w.lengthSq() < 1e-12) continue
+        w.normalize()
+        const ad = arterialDistance(dir.clone().addScaledVector(w, 3 / g).normalize())
+        if (ad < bestAd) {
+          bestAd = ad
+          axis0 = w
+        }
       }
-      // faces the road squarely: local +Z runs down the approach axis
-      const road = loopDirRaw(nearestLoopT(dir), new THREE.Vector3())
-      const axis = arcTangent(dir, road)
-      if (!axis) continue
-      const quat = surfaceQuaternion(
-        dir,
-        spinAlong(dir, new THREE.Vector3().crossVectors(dir, axis)),
-      )
-      const at = dir.clone().multiplyScalar(g)
-      // the front face must stand clear of the road, and no part of the
-      // footprint may lie on any drawn road surface
-      // same earthworks rule as SETBACK_FLOOR, but stated against the
-      // palace's own depth: its pad chain reaches halfDepth + 0.9 + ramp
-      if (arterialDistance(dir) < halfDepth + SETBACK_FLOOR + wantApproach) {
-        _prej.plot++
-        continue
-      }
-      if (!footprintOffRoad(at, quat, halfWide, halfDepth)) {
-        _prej.plot++
-        continue
-      }
-      if (!padChainClearsRoad(padChain(at, quat, halfWide, halfDepth))) {
-        _prej.plot++
-        continue
-      }
-      const prel = rectRelief(at, quat, halfWide, halfDepth)
-      if (prel.drop > maxRelief) {
-        _prej.relief++
-        continue
-      }
-      if (prel.lo < WATER_LEVEL + 0.9) {
-        _prej.wet++
-        continue
-      }
-      const sweep = footprintFree(at, quat, halfWide, halfDepth, props)
-      if (!sweep) {
-        _prej.props++
-        continue
-      }
-      if (!footprintFreeOfNpcs(at, quat, halfWide, halfDepth)) {
-        _prej.npc++
-        continue
-      }
-      best = { dir, quat, axis, sweep, ring }
+      if (!axis0) continue
+      const around = groundAround(ring * 1000 + si, dir, g)
+      CENTRES.push({ dir, g, axis0, rr, fall: g - around.lo, wet: around.wet, cliff: around.cliff })
     }
   }
+  /**
+   * Sizing a claim is the expensive part (121 ground samples per rotation), so
+   * only run it where the landform is worth having. Measured across this disc
+   * the fall ranges 0.29u to over 10u; anything within 5u of the flattest is a
+   * candidate, which is ~24% of the disc.
+   */
+  /**
+   * Sizing a claim costs 121 ground samples per rotation, so it runs on the
+   * 200 gentlest centres rather than all 4230. Uncapped, the search took 65s
+   * at startup.
+   */
+  const DRY = CENTRES.filter((k) => !k.wet).sort((a, b) => a.cliff - b.cliff)
+  const flatFloor = DRY.length ? DRY[0].cliff : 0
+  let SHORTLIST = DRY.slice(0, 200)
+  for (let pass = 0; pass < 2; pass++) {
+  if (pass === 1) {
+    if (cands.length) break
+    SHORTLIST = CENTRES // nothing fitted on flat ground: fall back to the disc
+  }
+  for (let ci = 0; ci < CLAIMS.length; ci++) {
+  best = null
+  claimIndex = ci
+  ;[LAWN_SIDE, LAWN_BACK, FORE, DRIVE] = CLAIMS[ci]
+  BACK = halfU + LAWN_BACK
+  FRONT = halfU + ARRIVAL + FORE + DRIVE
+  HW = halfV + LAWN_SIDE
+  {
+    for (const CEN of SHORTLIST) {
+      const { dir, g, axis0, rr } = CEN
+
+      for (const rot of [0, 0.17, -0.17, 0.35, -0.35, 0.52, -0.52]) {
+        const axis = axis0.clone().applyAxisAngle(dir, rot).normalize()
+        const lat = new THREE.Vector3().crossVectors(dir, axis).normalize()
+        const at = (uu: number, vv: number) =>
+          dir.clone().addScaledVector(axis, uu / g).addScaledVector(lat, vv / g).normalize()
+
+        // the whole claim must be dry and off every road
+        let bad = false
+        const lvls: number[] = []
+        for (let i = 0; i <= 10 && !bad; i++) {
+          for (let j = 0; j <= 10 && !bad; j++) {
+            const p = at(-BACK + ((BACK + FRONT) * j) / 10, (i / 5 - 1) * HW)
+            const r = terrainRadius(p)
+            if (r < WATER_LEVEL + 1 || corridorSurface(p) !== null) bad = true
+            else lvls.push(r)
+          }
+        }
+        if (bad) {
+          _prej.wet++
+          continue
+        }
+        // the gate edge carries the opening: it stands 9u off the carriageway
+        let nearRoad = false
+        let frontRoom = Infinity
+        for (const vv of [0, HW * 0.6, -HW * 0.6, HW, -HW]) {
+          const ad = arterialDistance(at(FRONT, vv))
+          if (ad < 9.0) nearRoad = true
+          frontRoom = Math.min(frontRoom, ad)
+        }
+        if (nearRoad) {
+          _prej.plot++
+          continue
+        }
+        // no villager spawn inside the claim: they are terrain anchors and
+        // cannot be moved, so the ESTATE moves instead
+        let onNpc = false
+        for (const sp of npcSpots()) {
+          const rel = sp.clone().normalize()
+          if (rel.angleTo(dir) * g > BACK + FRONT + HW) continue
+          const uu = Math.asin(Math.max(-1, Math.min(1, rel.dot(axis)))) * g
+          const vv = Math.asin(Math.max(-1, Math.min(1, rel.dot(lat)))) * g
+          if (uu > -BACK && uu < FRONT && Math.abs(vv) < HW) onNpc = true
+        }
+        if (onNpc) {
+          _prej.npc++
+          continue
+        }
+        // prefer the placement whose WALL LINE sits flattest — a wall stepping
+        // down a hillside is the thing this is meant to stop
+        /**
+         * Level LOW, at the 20th percentile, so the terrace is mostly CUT into
+         * the slope rather than filled on top of it. Cut reads as a natural
+         * shelf; fill reads as a plinth in the sky. At the 45th percentile the
+         * same site fills 3.90u, at the 20th it fills 2.51u.
+         */
+        lvls.sort((x, y) => x - y)
+        const lvl = lvls[Math.floor(lvls.length * 0.2)]
+        let drop = 0
+        for (let k = 0; k <= 40; k++) {
+          const f = k / 40
+          const wu0 = -BACK + WALL_INSET
+          const wu1 = FRONT - WALL_INSET
+          const wv = HW - WALL_INSET
+          for (const [uu, vv] of [
+            [wu0, -wv + 2 * wv * f],
+            [wu1, -wv + 2 * wv * f],
+            [wu0 + (wu1 - wu0) * f, wv],
+            [wu0 + (wu1 - wu0) * f, -wv],
+          ] as [number, number][]) {
+            /**
+             * FILL only. `Math.abs` here scored a shelf dug into a hillside
+             * exactly as badly as a mound heaped on top of one, so the search
+             * had no way to tell the two apart -- and only fill makes a
+             * building look like it is standing in the sky.
+             */
+            drop = Math.max(drop, lvl - terrainRadius(at(uu, vv)))
+          }
+        }
+        /**
+         * Also score the ground OUTSIDE the claim. Scoring the wall line alone
+         * put the estate on a ridge crest: flat to 4u past the palace walls,
+         * then a 10.41u fall — which is why the palace read as flying on a
+         * mesa. A site whose surroundings continue at roughly its own level is
+         * worth far more than one that is merely flat on top.
+         */
+        let apron = 0
+        for (let k = 0; k <= 24; k++) {
+          const f = k / 24
+          for (const [uu, vv] of [
+            [-BACK - 8, -HW + 2 * HW * f],
+            [FRONT + 8, -HW + 2 * HW * f],
+            [-BACK + (BACK + FRONT) * f, HW + 8],
+            [-BACK + (BACK + FRONT) * f, -(HW + 8)],
+          ] as [number, number][]) {
+            const r2 = terrainRadius(at(uu, vv))
+            if (r2 < WATER_LEVEL) continue
+            apron = Math.max(apron, lvl - r2)
+          }
+        }
+        /**
+         * The landform out to 24u, weighted above everything else, plus a
+         * light pull back toward the zone centre so the estate does not drift
+         * off looking for a marginally flatter field.
+         */
+        const fall = Math.max(0, lvl - (g - CEN.fall))
+        /**
+         * A pad can only blend as far as `arterialDistance - radius -
+         * ROAD_KEEPOUT`, so an estate parked 13u off the arterial gets NO
+         * grading along its front edge at all -- and the front edge is the one
+         * the player sees from the road. Wanting 12u of blend there means
+         * wanting 9 + 2.5 + 12 = 23.5u of clearance, so sites that cannot
+         * offer it pay for the bank they leave behind.
+         */
+        const FRONT_WANT = 23.5
+        const score =
+          Math.max(drop, 0) * 0.5 +
+          Math.max(apron, 0) * 0.5 +
+          CEN.cliff * 3 +
+          fall * 0.3 +
+          Math.max(0, FRONT_WANT - frontRoom) * 0.5 +
+          rr * 0.02
+        if (!best || score < best.score) {
+          best = { dir, axis, lat, drop, apron, fall, cliff: CEN.cliff, score, ring: rr, rot }
+        }
+      }
+    }
+  }
+  if (best) cands.push({ ...best, ci })
+  }
+  }
+
+  /**
+   * Flattest wins, but a bigger estate is worth a little mesa: among the
+   * candidates within 0.4u of the flattest, take the largest claim.
+   */
+  best = null
+  if (cands.length) {
+    const flattest = Math.min(...cands.map((k) => k.score))
+    const pick = cands.filter((k) => k.score <= flattest + 0.4).sort((a, b) => a.ci - b.ci)[0]
+    best = pick
+    claimIndex = pick.ci
+    ;[LAWN_SIDE, LAWN_BACK, FORE, DRIVE] = CLAIMS[pick.ci]
+    BACK = halfU + LAWN_BACK
+    FRONT = halfU + ARRIVAL + FORE + DRIVE
+    HW = halfV + LAWN_SIDE
   }
 
   if (!best) {
@@ -3242,15 +3598,252 @@ function placePalace(props: PlacedProp[]) {
     return
   }
 
-  const { dir: pDir, quat: pQuat, axis } = best
-  sweepScatter(props, best.sweep)
+  const { dir: pDir, axis, lat } = best
   const pG = terrainRadius(pDir)
-  const pAt = pDir.clone().multiplyScalar(pG)
-  let seed = 9700
+  const ground = (uu: number, vv: number) =>
+    pDir.clone().addScaledVector(axis, uu / pG).addScaledVector(lat, vv / pG).normalize()
 
-  props.push({
+  /* ---- CLAIM: clear everything inside, whatever put it there ------------- */
+  /**
+   * Span-borne road infrastructure is never cleared — it would be a bug for
+   * any of it to be inside the claim, and the count is reported so that shows
+   * up rather than being silently deleted.
+   */
+  const SPAN_BORNE = new Set<PropKind>([
+    "bridge-deck", "bridge-rail", "bridge-pier", "metro-track", "metro-pillar",
+    "metro-station",
+  ])
+  const inClaim = (d: THREE.Vector3, margin: number) => {
+    if (pDir.angleTo(d) * pG > BACK + FRONT + HW + margin) return false
+    const uu = Math.asin(Math.max(-1, Math.min(1, d.dot(axis)))) * pG
+    const vv = Math.asin(Math.max(-1, Math.min(1, d.dot(lat)))) * pG
+    return uu > -BACK - margin && uu < FRONT + margin && Math.abs(vv) < HW + margin
+  }
+  const cleared: Record<string, number> = {}
+  let infraInside = 0
+  {
+    const gone: PlacedProp[] = []
+    for (const q of props) {
+      const d = q.position.clone().normalize()
+      if (!inClaim(d, 0.5)) continue
+      if (SPAN_BORNE.has(q.kind)) {
+        infraInside++
+        continue
+      }
+      // the zone plate is moved outside the wall later, not deleted
+      if (q.kind === "zone-signboard") continue
+      // Seth Rajwada's seat stays: his spawn is a terrain anchor just outside
+      // the claim and clearing his workstation leaves him nothing to sit on.
+      // The terrace grades under it, so it no longer floats either.
+      if (q.kind === "sit-step") continue
+      gone.push(q)
+      const k =
+        q.kind === "glb-building"
+          ? q.modelPath!.split("/").pop()!.replace(".glb", "").slice(0, 26)
+          : q.kind
+      cleared[k] = (cleared[k] ?? 0) + 1
+    }
+    // a cleared pole strands its wires
+    for (const q of props) {
+      if (q.kind !== "wire" || !q.aux || gone.includes(q)) continue
+      if (q.aux.some((e) => inClaim(e.clone().normalize(), 0.5))) {
+        gone.push(q)
+        cleared.wire = (cleared.wire ?? 0) + 1
+      }
+    }
+    sweepScatter(props, gone)
+    // and every foreign grading pad: theirs level to THEIR height and would
+    // fight the terrace wherever the two overlap
+    const keep: BuildPad[] = []
+    let pads = 0
+    for (const pad of _buildPads) {
+      if (inClaim(pad.dir, PLOT_GRADE_RAMP)) pads++
+      else keep.push(pad)
+    }
+    _buildPads = keep
+    cleared["grading pads (other systems)"] = pads
+  }
+
+  /* ---- grade the claim as one terrace ----------------------------------- */
+  const levels: number[] = []
+  for (let i = 0; i <= 8; i++) {
+    for (let j = 0; j <= 8; j++) {
+      levels.push(terrainRadius(ground(-BACK + ((BACK + FRONT) * i) / 8, -HW + (2 * HW * j) / 8)))
+    }
+  }
+  levels.sort((x, y) => x - y)
+  const level = levels[Math.floor(levels.length * 0.45)]
+
+  const MARGIN = 2.0
+  const CELL = 4.2
+  const PAD_R = (CELL * Math.SQRT2) / 2 + 0.4
+  const nU = Math.max(1, Math.ceil((BACK + FRONT + 2 * MARGIN) / CELL))
+  const nV = Math.max(1, Math.ceil((2 * (HW + MARGIN)) / CELL))
+  let padCount = 0
+  for (let i = 0; i < nU; i++) {
+    for (let j = 0; j < nV; j++) {
+      const uu = -BACK - MARGIN + (i + 0.5) * ((BACK + FRONT + 2 * MARGIN) / nU)
+      const vv = -(HW + MARGIN) + (j + 0.5) * ((2 * (HW + MARGIN)) / nV)
+      const d = ground(uu, vv)
+      if (terrainRadius(d) < WATER_LEVEL + 0.6) continue
+      let ramp: number | null = null
+      let radius = PAD_R
+      /**
+       * The longest blend this pad can afford without its grading reaching the
+       * road, tried widest first.
+       *
+       * Every site in this zone that can hold the estate stands on a hillside
+       * -- the gentlest measured 2.82u of fall per 3u (42 deg), the one chosen
+       * 3.01u (45 deg). A terrace that stops dead at 6u leaves the palace on a
+       * pillar above that slope, which is exactly what "floating" looks like.
+       * A smoothstep of width w carrying a fall of h peaks at 1.5h/w, so 22u
+       * turns a 7u drop into a 25 deg bank instead of a 45 deg face. Pads near
+       * the road step down the ladder and keep their grading off it.
+       */
+      const room = arterialDistance(d)
+      for (const rad of [PAD_R, 2.4]) {
+        const r = Math.min(SKIRT_RAMP, room - rad - ROAD_KEEPOUT)
+        if (r >= PLOT_GRADE_RAMP) {
+          ramp = r
+          radius = rad
+          break
+        }
+      }
+      if (ramp === null) continue
+      _buildPads.push({ dir: d, radius, ramp, level })
+      padCount++
+    }
+  }
+
+  /**
+   * The plinth is GROUND, tier 1.
+   *
+   * These pads raise the terrain by PLINTH_RISE over the palace footprint
+   * plus its margin. Being tier 1 they blend OVER the terrace across their own
+   * 1.6u ramp instead of fighting it for the same weight, so the 0.55u rise
+   * comes out as a walkable slope — that is what lets the player climb to the
+   * door instead of walking through the steps.
+   */
+  const PLINTH_RISE = 0.55
+  const PLINTH_MARGIN = 1.0
+  // the ramp IS the stair run, so the ground slope and the treads agree
+  const PLINTH_RAMP = (MODELS.stairs.src[2] * PLINTH_RISE) / MODELS.stairs.src[1]
+  {
+    const hu = halfU + PLINTH_MARGIN
+    const hv = halfV + PLINTH_MARGIN
+    /**
+     * Pad centres are inset by exactly one radius, so the union's flat core
+     * ENDS on the rectangle instead of overrunning it. At r = 2.0 spread to
+     * the rectangle's edge the core reached 1.3u further than intended, which
+     * put the plinth's slope past the steps entirely — the treads seated on
+     * the flat top and the player walked through them. Spacing stays under
+     * r*sqrt(2) so the discs still tile without holes.
+     */
+    const r = 1.4
+    const span = r * 1.4
+    const nU2 = Math.max(2, Math.ceil((2 * (hu - r)) / span) + 1)
+    const nV2 = Math.max(2, Math.ceil((2 * (hv - r)) / span) + 1)
+    for (let i = 0; i < nU2; i++) {
+      for (let j = 0; j < nV2; j++) {
+        _buildPads.push({
+          dir: ground(
+            -(hu - r) + (i * (2 * (hu - r))) / (nU2 - 1),
+            -(hv - r) + (j * (2 * (hv - r))) / (nV2 - 1),
+          ),
+          radius: r,
+          ramp: PLINTH_RAMP,
+          tier: 1,
+          level: level + PLINTH_RISE,
+        })
+      }
+    }
+  }
+
+  /**
+   * (was: no terrain plinth.
+   *
+   * Raising the ground under the palace was tried and measured: plotGrade
+   * resolves overlapping sites "nearest wins" BY ARRAY ORDER, so the terrace
+   * pads hold f = 1 right up to the plinth pads' edge and the plinth's ramp
+   * never gets to act. The result was a hard 0.55u cliff at the forecourt --
+   * the walk test went 0.133u -> 0.550u and both parked cars ended up on
+   * 0.55u of tilt. The palace stands on the terrace with a masonry base
+   * course as its visible face instead, which measures zero daylight.
+   * Superseded once plotGrade learned to blend tiers.)
+   */
+
+  PALACE_FRAME = { dir: pDir, axis, lat, level, back: BACK, front: FRONT, hw: HW, halfU, halfV, fore: FORE, drive: DRIVE }
+  _palace = {
+    "ideal estate a palace wants": `${(2 * (halfV + CLAIMS[0][0])).toFixed(1)} x ${(2 * halfU + CLAIMS[0][1] + ARRIVAL + CLAIMS[0][2] + CLAIMS[0][3]).toFixed(1)}u`,
+    "claim set used (0 = ideal)": claimIndex,
+    "claimed estate": `${(2 * HW).toFixed(1)} x ${(BACK + FRONT).toFixed(1)}u`,
+    "claim rotated off the roadward bearing": `${((best.rot * 180) / Math.PI).toFixed(0)} deg`,
+    "claim centre from the zone centre": +best.ring.toFixed(1),
+    "palace centre from arterial": +arterialDistance(pDir).toFixed(2),
+    "wall-line drop before grading": +best.drop.toFixed(2),
+    "ground 8u outside the claim, below the terrace": +best.apron.toFixed(2),
+    "land falls away within 24u": +best.fall.toFixed(2),
+    "steepest natural slope within 24u": `${best.cliff.toFixed(2)}u per 3u = ${((Math.atan(best.cliff / 3) * 180) / Math.PI).toFixed(0)} deg (gentlest in this zone: ${flatFloor.toFixed(2)})`,
+    "terrace level": +level.toFixed(2),
+    "terrace pads": padCount,
+    "CLEARED from the claim": JSON.stringify(cleared),
+    "road infrastructure inside the claim (must be 0)": infraInside,
+  }
+}
+
+/** is `dir` inside the palace estate (plus `margin`)? */
+function inPalaceEstate(dir: THREE.Vector3, margin = 0) {
+  const F = PALACE_FRAME
+  if (!F) return false
+  const g = F.level
+  if (F.dir.angleTo(dir) * g > F.back + F.front + F.hw + margin) return false
+  const u = Math.asin(Math.max(-1, Math.min(1, dir.dot(F.axis)))) * g
+  const v = Math.asin(Math.max(-1, Math.min(1, dir.dot(F.lat)))) * g
+  return u > -F.back - margin && u < F.front + margin && Math.abs(v) < F.hw + margin
+}
+
+/**
+ * Build the estate. Runs AFTER gradeBuildingPads, so terrainRadius already
+ * returns the graded terrace and every piece seats on final ground.
+ */
+function placePalaceEstate(props: PlacedProp[]) {
+  const F = PALACE_FRAME
+  if (!F) return
+  const { dir: pDir, axis, lat, level, back: BACK, front: FRONT, hw: HW, halfU, halfV } = F
+  const pG = level
+  const ground = (uu: number, vv: number) =>
+    pDir.clone().addScaledVector(axis, uu / pG).addScaledVector(lat, vv / pG).normalize()
+  let seed = 9700
+  const mine: PlacedProp[] = []
+  const push = (p: PlacedProp) => {
+    props.push(p)
+    mine.push(p)
+  }
+
+  /* ---- the arrival sequence, in world units along +u --------------------- */
+  const PLINTH_H = 0.55
+  const PLINTH_PAD = 1.0
+  const plinthU = halfU + PLINTH_PAD
+  const stairs = MODELS.stairs
+  const STAIR_S = PLINTH_H / stairs.src[1] // rise matches the plinth exactly
+  const stairRun = stairs.src[2] * STAIR_S
+  // the plinth's flat core ends at plinthU and its ramp runs out over exactly
+  // stairRun, so the treads lie ON that slope rather than beside it
+  const stepsFrom = plinthU
+  const stepsTo = plinthU + stairRun
+  const foreFrom = stepsTo
+  const foreTo = foreFrom + F.fore
+  const gateU = FRONT - WALL_INSET
+  const driveFrom = foreTo
+  const driveTo = gateU
+
+  /* ---- the palace, on a visible plinth ---------------------------------- */
+  const m = MODELS.palace
+  const pQuat = surfaceQuaternion(pDir, spinAlong(pDir, axis))
+  push({
     kind: "glb-building",
-    position: pAt,
+    // on the RAISED ground the tier-1 plinth pads made
+    position: pDir.clone().multiplyScalar(terrainRadius(pDir)),
     quaternion: pQuat,
     scale: m.scale,
     colorA: "#e2d6bb",
@@ -3258,171 +3851,449 @@ function placePalace(props: PlacedProp[]) {
     seed: seed++,
     modelPath: m.path,
     tint: "#e2d6bb",
+    plinth: false,
+    /**
+     * No base course box. It was meant to read as masonry, but measured, its
+     * top stood 0.300u PROUD of the palace's own ground plane — a lip the
+     * building visibly perched on, which is the "palace above the ground"
+     * fault. The tier-1 plinth pads raise the terrain itself now, so the
+     * palace stands on earth and needs no slab under it.
+     */
     box: modelBox(m),
   })
-  for (const q of padChain(pAt, pQuat, halfWide, halfDepth)) {
-    _buildPads.push({ dir: q.dir, radius: q.radius, level: pG })
+
+  /* ---- paving ------------------------------------------------------------ */
+  const pave = (uA: number, uB: number, halfV2: number, inner: string, edge: string) => {
+    const uc = (uA + uB) / 2
+    const d = ground(uc, 0)
+    const along = arcTangent(d, ground(uc + 1, 0))
+    if (!along) return
+    push({
+      kind: "paved-strip",
+      position: d.clone().multiplyScalar(terrainRadius(d)),
+      quaternion: surfaceQuaternion(d, spinAlong(d, along)),
+      scale: 1,
+      colorA: inner,
+      colorB: edge,
+      seed: seed++,
+      noCollider: true,
+      box: { hx: (uB - uA) / 2, hz: halfV2, top: 0.03 },
+    })
+  }
+  const paveAt = (uc: number, vc: number, hu: number, hv: number, inner: string, edge: string) => {
+    const d = ground(uc, vc)
+    const along = arcTangent(d, ground(uc + 1, vc))
+    if (!along) return
+    push({
+      kind: "paved-strip",
+      position: d.clone().multiplyScalar(terrainRadius(d)),
+      quaternion: surfaceQuaternion(d, spinAlong(d, along)),
+      scale: 1,
+      colorA: inner,
+      colorB: edge,
+      seed: seed++,
+      noCollider: true,
+      box: { hx: hu, hz: hv, top: 0.03 },
+    })
+  }
+  // forecourt: as wide as the facade, deep enough to stand back in
+  pave(foreFrom, foreTo, halfV, "#b3aca0", "#948d82")
+  // driveway: an even ribbon from the forecourt to the gate
+  const DRIVE_HALF = 2.0
+  pave(driveFrom, driveTo + 1.4, DRIVE_HALF, "#9a958c", "#7f7a72")
+  // and the steps' own landing, so the walk is paved end to end
+  pave(stepsFrom - 0.2, stepsTo + 0.2, halfV * 0.55, "#b3aca0", "#948d82")
+
+  /* ---- steps: forecourt up to the plinth --------------------------------- */
+  let stepCount = 0
+  {
+    const wide = stairs.src[0] * STAIR_S
+    const n = Math.max(3, Math.round((halfV * 0.9) / wide))
+    for (let k = 0; k < n; k++) {
+      const vv = (k - (n - 1) / 2) * wide
+      const d = ground((stepsFrom + stepsTo) / 2, vv)
+      /**
+       * Stairs.glb rises toward its own -Z — measured off the mesh, the +Z
+       * half tops out at 0.008 and the -Z half at 0.014. Aiming +Z uphill put
+       * every flight in backwards. The DOWNHILL bearing goes in instead, so
+       * local -Z climbs toward the palace.
+       */
+      const uphill = arcTangent(d, ground((stepsFrom + stepsTo) / 2 + 1, vv))
+      if (!uphill) continue
+      const footDir = ground(stepsTo, vv)
+      push({
+        kind: "glb-building",
+        // seated at the ground at the ramp's FOOT: the bottom tread meets the
+        // forecourt and the top tread meets the plinth, because STAIR_S makes
+        // the model's rise equal PLINTH_H exactly
+        position: d.clone().multiplyScalar(terrainRadius(footDir)),
+        quaternion: surfaceQuaternion(
+          d,
+          spinAlong(d, new THREE.Vector3().crossVectors(d, uphill)),
+        ),
+        scale: STAIR_S,
+        colorA: "#cbb897",
+        colorB: "#cbb897",
+        seed: seed++,
+        modelPath: stairs.path,
+        tint: "#cbb897",
+        plinth: false,
+        noCollider: true,
+        box: modelBox(stairs),
+      })
+      stepCount++
+    }
   }
 
-  /**
-   * A point on the grounds: `u` world units down the approach axis from the
-   * palace centre (toward the road), `v` across it.
-   */
-  const lateral = new THREE.Vector3().crossVectors(pDir, axis).normalize()
-  const ground = (u: number, v: number) =>
-    pDir
-      .clone()
-      .addScaledVector(axis, u / pG)
-      .addScaledVector(lateral, v / pG)
-      .normalize()
-
-  /** stand one GLB on the grounds, square to the approach */
-  const put = (u: number, v: number, spec: ModelSpec, tint: string, minClear: number, along = false) => {
-    const d = ground(u, v)
-    const gg = terrainRadius(d)
-    _pput.tried++
-    if (gg < WATER_LEVEL + 0.5) { _pput.wet++; return false }
-    const at = d.clone().multiplyScalar(gg)
-    if (minClear > 0) {
-      let near = Infinity
-      for (const q of props) {
-        // consecutive paving slabs are MEANT to touch; everything else is not
-        if (q.modelPath === spec.path) continue
-        if (q.kind === "wire" || PLOT_SCATTER.has(q.kind)) continue
-        near = Math.min(near, at.distanceTo(q.position))
+  /* ---- compound wall: one enclosure, one gate ---------------------------- */
+  const HEDGE_H = 1.9
+  const HEDGE_T = 0.55
+  const GATE_HALF = DRIVE_HALF + 0.7
+  const wu0 = -BACK + WALL_INSET
+  const wu1 = gateU
+  const wv = HW - WALL_INSET
+  let perimeter = 0
+  const hedge = (uA: number, vA: number, uB: number, vB: number) => {
+    const len = Math.hypot(uB - uA, vB - vA)
+    if (len < 0.8) return
+    const nSeg = Math.max(1, Math.ceil(len / 5.5))
+    for (let k = 0; k < nSeg; k++) {
+      const f0 = k / nSeg
+      const f1 = (k + 1) / nSeg
+      const u1 = uA + (uB - uA) * f0
+      const v1 = vA + (vB - vA) * f0
+      const u2 = uA + (uB - uA) * f1
+      const v2 = vA + (vB - vA) * f1
+      const segLen = Math.hypot(u2 - u1, v2 - v1) + 0.7
+      const uc = (u1 + u2) / 2
+      const vc = (v1 + v2) / 2
+      const d = ground(uc, vc)
+      const ahead = ground(uc + (u2 - u1) / segLen, vc + (v2 - v1) / segLen)
+      const along = arcTangent(d, ahead)
+      if (!along) continue
+      // the collider band is sized from this piece's OWN ground range, so it
+      // cannot leak where the rim slopes under its ends
+      let gMin = Infinity
+      let gMax = -Infinity
+      for (let st = 0; st <= 4; st++) {
+        const f2 = st / 4
+        const gs = terrainRadius(ground(u1 + (u2 - u1) * f2, v1 + (v2 - v1) * f2))
+        gMin = Math.min(gMin, gs)
+        gMax = Math.max(gMax, gs)
       }
-      if (near < minClear) { _pput.clear++; return false }
+      push({
+        kind: "hedge-run",
+        position: d.clone().multiplyScalar(gMin - 0.6),
+        quaternion: surfaceQuaternion(d, spinAlong(d, along)),
+        scale: 1,
+        colorA: "#cabfa6",
+        colorB: "#a89c82",
+        seed: seed++,
+        box: { hx: segLen / 2, hz: HEDGE_T, top: gMax - gMin + HEDGE_H + 1.2 },
+      })
     }
-    const ax = arcTangent(d, pDir.clone().addScaledVector(axis, 0.3))
-    const face = along ? new THREE.Vector3().crossVectors(d, ax ?? axis) : (ax ?? axis)
-    const q = surfaceQuaternion(d, spinAlong(d, new THREE.Vector3().crossVectors(d, face)))
-    // nothing on the grounds may overhang the carriageway, paving included
-    if (!footprintOffRoad(at, q, alongHalf(spec), acrossHalf(spec))) { _pput.road++; return false }
-    props.push({
+    perimeter += len
+  }
+  hedge(wu0, -wv, wu1, -wv)
+  hedge(wu0, wv, wu1, wv)
+  hedge(wu0, -wv, wu0, wv)
+  hedge(wu1, -wv, wu1, -GATE_HALF)
+  hedge(wu1, GATE_HALF, wu1, wv)
+
+  /* ---- the gate, in the wall's own opening -------------------------------- */
+  const gDir = ground(gateU, 0)
+  const gAxis = arcTangent(gDir, ground(gateU + 2, 0)) ?? axis
+  push({
+    kind: "haveli-arch",
+    position: gDir.clone().multiplyScalar(terrainRadius(gDir)),
+    quaternion: surfaceQuaternion(
+      gDir,
+      spinAlong(gDir, new THREE.Vector3().crossVectors(gDir, gAxis)),
+    ),
+    scale: 2.2,
+    colorA: "#d8c9a6",
+    colorB: "#b0453a",
+    seed: seed++,
+  })
+
+  /* ---- parking: a marked bay on the forecourt's flank --------------------- */
+  /**
+   * On the forecourt, not in the side lawn. At this claim the side lawn is
+   * HW - halfV - WALL_INSET = 2.3u of usable width and a two-car bay is 3.8u
+   * across; put there, its outer car stood 0.13u beyond the wall line. The
+   * forecourt is already paved, already level, already inside the wall, and
+   * the avenue runs outboard of it — so the bay costs nothing and clashes
+   * with nothing.
+   */
+  const BAY_V = -halfV * 0.57
+  const BAY_HU = 2.0
+  const BAY_HV = 1.9
+  // clear of the plinth ramp, which reaches halfU + 1.0 + 1.6 = 8.4u:
+  // parked closer, each car's nose sat on the slope and tilted 0.55u
+  const bayU = foreFrom + 2.6
+  paveAt(bayU, BAY_V, BAY_HU, BAY_HV, "#8f8a82", "#75706a")
+  let cars = 0
+  {
+    const sedan = MODELS.sedan
+    for (const [du, dv, tint] of [
+      [0.4, -1.55, "#6f9fd0"],
+      [0.4, 1.55, "#c8664f"],
+    ] as [number, number, string][]) {
+      const d = ground(bayU + du, BAY_V + dv)
+      const along = arcTangent(d, ground(bayU + du + 1, BAY_V + dv))
+      if (!along) continue
+      /**
+       * spinAlong aims local +X. The sedan's LENGTH is its +Z (2.938u against
+       * 1.157u across), so aiming +X down the drive parked both cars
+       * broadside — their length spanned the 2.3u between them and they
+       * overlapped by 0.64u. Passing the lateral puts +Z down the drive.
+       */
+      push({
+        kind: "glb-building",
+        position: d.clone().multiplyScalar(terrainRadius(d)),
+        quaternion: surfaceQuaternion(
+          d,
+          spinAlong(d, new THREE.Vector3().crossVectors(d, along)),
+        ),
+        scale: sedan.scale,
+        colorA: tint,
+        colorB: tint,
+        seed: seed++,
+        modelPath: sedan.path,
+        tint,
+        plinth: false,
+        normalize: sedan.normalize,
+        box: modelBox(sedan),
+      })
+      cars++
+    }
+  }
+
+  /* ---- planting: an avenue in matched pairs, then lawn trees -------------- */
+  const canPut = (uu: number, vv: number, clear: number) => {
+    const d = ground(uu, vv)
+    if (terrainRadius(d) < WATER_LEVEL + 0.6) return false
+    const at = d.clone().multiplyScalar(terrainRadius(d))
+    if (npcNearest(at) < 1.7) return false
+    for (const q of props) {
+      if (q.kind === "wire" || q.kind === "paved-strip" || q.noCollider) continue
+      // A hedge run is a 5.5u LINE but this test compares to its centre point,
+      // so a run whose midpoint happens to sit opposite the avenue read as a
+      // clash even though the wall is a fixed 1.5u away. The avenue's setback
+      // from the wall is guaranteed by AV_V, so the hedge is excluded here.
+      if (q.kind === "hedge-run") continue
+      if (at.distanceTo(q.position) < clear) return false
+    }
+    return true
+  }
+  /**
+   * Estate palms are planted at 0.72 of the stock scale. At full size a single
+   * canopy is 5.5u across and fills the camera from anywhere on the drive —
+   * the avenue was hiding the building it is meant to frame.
+   */
+  const PALM_SCALE = 0.72
+  const plant = (uu: number, vv: number, key: string, tint: string) => {
+    const spec = MODELS[key]
+    const d = ground(uu, vv)
+    push({
       kind: "glb-building",
-      position: at,
-      quaternion: q,
-      scale: spec.scale,
+      position: d.clone().multiplyScalar(terrainRadius(d)),
+      quaternion: surfaceQuaternion(d, (uu * 2.3 + vv) % (Math.PI * 2)),
+      scale: spec.scale * PALM_SCALE,
       colorA: tint,
       colorB: tint,
       seed: seed++,
       modelPath: spec.path,
       part: spec.part,
       tint,
-      plinth: spec.plinth,
+      plinth: false,
       box: modelBox(spec),
     })
-    return true
   }
-
-  const paving = MODELS.paving
-  const tileLen = paving.src[2] * paving.scale
-  const tileWide = paving.src[0] * paving.scale
-  const doorU = halfDepth
-
-  // how far down the axis the road is: walk out until the corridor is reached
-  let roadU = doorU
-  for (let u = doorU; u <= doorU + 60; u += 0.5) {
-    if (arterialDistance(ground(u, 0)) <= CORRIDOR_SUPPRESS + 0.4) break
-    roadU = u
-  }
-
-  // forecourt: two rows of three tiles right at the door
-  let laid = 0
-  for (let row = 0; row < 2; row++) {
-    for (let col = -1; col <= 1; col++) {
-      if (put(doorU + 0.4 + row * tileLen, col * tileWide, paving, "#cfc4ae", 1.3)) laid++
+  // The avenue flanks the WHOLE approach — forecourt and drive — because the
+  // drive alone is 6u and three pairs will not read in 6u. Outboard of the
+  // forecourt edge, inboard of the wall.
+  /**
+   * Just outboard of the forecourt edge, NOT out by the wall. At 0.62 of the
+   * lawn the palms stood 0.76u off the hedge and it blocked two of the three
+   * pairs outright; the lawn here is only ~2u wide.
+   */
+  const AV_V = halfV + (HW - WALL_INSET - halfV) * 0.25
+  let avenue = 0
+  let avenueSpacing = 0
+  {
+    /**
+     * The avenue is planned as a SET, not nudged pair by pair.
+     *
+     * Greedy nudging placed the first pair wherever it happened to fit and
+     * then had no room left for the third — it shipped two pairs out of three.
+     * Here the whole flight is offered at a range of global shifts and
+     * spacings, every station is tested against the props already standing AND
+     * against the others in its own set, and the first arrangement where all
+     * six positions pass is the one that goes in. All three pairs or none.
+     */
+    const PAIRS = 3
+    const from0 = foreFrom - 0.6
+    const to0 = driveTo - 0.3
+    let chosen: number[] | null = null
+    outer: for (const squeeze of [1.0, 0.88, 0.76, 0.64]) {
+      const span = (to0 - from0) * squeeze
+      for (const shift of [0, 0.5, -0.5, 1.0, -1.0, 1.5, -1.5, 2.0, -2.0]) {
+        const mid = (from0 + to0) / 2 + shift
+        const stations: number[] = []
+        for (let k = 0; k < PAIRS; k++) {
+          stations.push(mid - span / 2 + (k * span) / (PAIRS - 1))
+        }
+        // every station must clear the standing props on BOTH sides...
+        let ok = true
+        for (const uu of stations) {
+          if (!canPut(uu, AV_V, 1.3) || !canPut(uu, -AV_V, 1.3)) {
+            ok = false
+            break
+          }
+        }
+        // ...and the stations must not crowd each other
+        if (ok) {
+          for (let i = 1; i < stations.length; i++) {
+            if (stations[i] - stations[i - 1] < 2.2) {
+              ok = false
+              break
+            }
+          }
+        }
+        if (ok) {
+          chosen = stations
+          avenueSpacing = span / (PAIRS - 1)
+          break outer
+        }
+      }
+    }
+    if (chosen) {
+      chosen.forEach((uu, k) => {
+        const key = ["palm2", "palm1", "palm3"][k % 3]
+        plant(uu, AV_V, key, "#5c8a3f")
+        plant(uu, -AV_V, key, "#5c8a3f")
+        avenue += 2
+      })
     }
   }
-  const courtOuter = doorU + 0.4 + 2 * tileLen
 
-  // approach: tiles from the forecourt out to the road
-  let approachEnd = courtOuter
-  for (let u = courtOuter + tileLen / 2; u <= roadU; u += tileLen) {
-    if (put(u, 0, paving, "#cfc4ae", 1.3)) {
-      laid++
-      approachEnd = u + tileLen / 2
-    }
+  // lawn trees and beds in the open ground, never in front of the facade
+  let lawnTrees = 0
+  for (const [uu, vv, key, tint] of [
+    // the back lawn is only (BACK - halfU - WALL_INSET) deep, so these sit
+    // close in: at -2.4 they stood 0.8u BEHIND the back wall, outside the
+    // compound they are meant to be planted in
+    [-halfU - 0.8, HW - 2.6, "palm3", "#4e7a36"],
+    [-halfU - 0.8, -(HW - 2.6), "palm4", "#568444"],
+    [-BACK + 2.2, 3.0, "palm1", "#67965a"],
+    [-BACK + 2.2, -3.0, "palm5", "#5f9150"],
+    [halfU * 0.2, HW - 2.4, "palm5", "#6a9c5a"],
+  ] as [number, number, string, string][]) {
+    if (!canPut(uu, vv, 1.7)) continue
+    plant(uu, vv, key, tint)
+    lawnTrees++
   }
-
-  // boundary wall across the frontage, with a gate gap on the approach axis
-  const wall = MODELS.wall
-  const segLen = wall.src[0] * wall.scale
-  const GATE_HALF = tileWide * 0.9
-  const wallU = Math.min(roadU - 1.0, courtOuter + (roadU - courtOuter) * 0.62)
-  let walls = 0
-  for (let k = -5; k <= 5; k++) {
-    const v = k * (segLen + 0.1)
-    if (Math.abs(v) < GATE_HALF + segLen / 2) continue
-    if (put(wallU, v, wall, "#c9c0ae", 1.2, true)) walls++
-  }
-  let posts = 0
+  // planting beds: low green rectangles either side of the forecourt
+  let beds = 0
   for (const sgn of [-1, 1]) {
-    if (put(wallU, sgn * (GATE_HALF + 0.3), MODELS.gatepost, "#bdb3a0", 1.2)) posts++
+    // in the lawn strip between the forecourt edge and the avenue
+    paveAt(foreFrom + 2.0, sgn * (halfV + 0.6), 1.8, 0.55, "#5f9a4c", "#4c7f3d")
+    beds++
   }
 
-  // cypresses flanking the approach, clear of the paving
-  const CY_TINT = ["#4f7a44", "#3f6b3a", "#5a8a4e"]
-  let trees = 0
-  for (const sgn of [-1, 1]) {
-    for (let i = 0; i < 4; i++) {
-      // flank the forecourt as well as the approach: the approach is only as
-      // long as the ground between the palace and the road allows
-      const u = doorU - 1.0 + i * 3.4
-      if (put(u, sgn * (halfWide + 1.6), MODELS.cypress, CY_TINT[i % 3], 1.6)) trees++
-    }
-  }
-
-  // lamps on the approach, using the existing procedural kind
+  /* ---- lamps flanking the drive ------------------------------------------ */
   let lamps = 0
   for (const sgn of [-1, 1]) {
-    for (let i = 0; i < 2; i++) {
-      const u = doorU + 1.6 + i * 5.2
-      if (u > roadU) break
-      const d = ground(u, sgn * 3.6)
-      const gg = terrainRadius(d)
-      if (gg < WATER_LEVEL + 0.5) continue
-      const at = d.clone().multiplyScalar(gg)
-      if (propClearance(at, props).nearest < 1.1) continue
-      props.push({
-        kind: "lamp-post",
-        position: at,
-        quaternion: surfaceQuaternion(d, 0),
-        scale: 1,
-        colorA: KIND_COLORS["lamp-post"]?.[0] ?? "#8a8478",
-        colorB: KIND_COLORS["lamp-post"]?.[1] ?? "#e8dcb0",
-        seed: seed++,
-      })
-      lamps++
+    const d = ground(driveFrom + (driveTo - driveFrom) * 0.5, sgn * (DRIVE_HALF + 0.9))
+    const at = d.clone().multiplyScalar(terrainRadius(d))
+    if (npcNearest(at) < 1.4) continue
+    if (propClearance(at, props).nearest < 1.0) continue
+    push({
+      kind: "lamp-post",
+      position: at,
+      quaternion: surfaceQuaternion(d, 0),
+      scale: 1,
+      colorA: KIND_COLORS["lamp-post"]?.[0] ?? "#8a8478",
+      colorB: KIND_COLORS["lamp-post"]?.[1] ?? "#e8dcb0",
+      seed: seed++,
+    })
+    lamps++
+  }
+
+  /* ---- signboard outside the wall, facing traffic ------------------------- */
+  let signboardMoved = 0
+  {
+    let plate: PlacedProp | null = null
+    let bestD = 40
+    const pAt = pDir.clone().multiplyScalar(level)
+    for (const q of props) {
+      if (q.kind !== "zone-signboard") continue
+      const d2 = q.position.distanceTo(pAt)
+      if (d2 < bestD) {
+        bestD = d2
+        plate = q
+      }
+    }
+    if (plate) {
+      const d = ground(gateU + 3.4, GATE_HALF + 2.4)
+      const t = nearestLoopT(d)
+      const roadFwd = loopDirRaw(t + 0.01, new THREE.Vector3()).sub(
+        loopDirRaw(t, new THREE.Vector3()),
+      )
+      roadFwd.addScaledVector(d, -roadFwd.dot(d))
+      plate.position.copy(d).multiplyScalar(terrainRadius(d))
+      plate.quaternion.copy(
+        surfaceQuaternion(d, roadFwd.lengthSq() > 1e-12 ? spinAlong(d, roadFwd.normalize()) : 0),
+      )
+      signboardMoved = 1
     }
   }
 
-  // does the approach actually connect? the largest step between consecutive
-  // paved centres, and how far the last tile still is from the road
-  _palace = {
-    "sited at ring": +(best.ring * 0.7).toFixed(2),
-    "siting pass (0 = full approach, 2 = deep cut)": usedPass,
+  _palaceProps = mine
+  Object.assign(_palace, {
     "palace height": +modelH(m).toFixed(2),
     "palace height in players": +(modelH(m) / PLAYER_H).toFixed(2),
-    "palace footprint": `${(halfWide * 2).toFixed(1)} x ${(halfDepth * 2).toFixed(1)}`,
-    "palace centre from arterial": +arterialDistance(pDir).toFixed(2),
-    "door from arterial": +(arterialDistance(pDir) - halfDepth).toFixed(2),
-    "forecourt depth": +(2 * tileLen).toFixed(2),
-    "approach length door to road": +(approachEnd - doorU).toFixed(2),
-    "approach ends this far from the corridor band":
-      +(arterialDistance(ground(approachEnd, 0)) - CORRIDOR_SUPPRESS).toFixed(2),
-    "paving tile pitch": +tileLen.toFixed(2),
-    "wall at": +wallU.toFixed(2),
-    "gate gap width": +(2 * (GATE_HALF + 0.3)).toFixed(2),
-    "lawn, wall to palace face": +(wallU - doorU).toFixed(2),
-    "paving tiles": laid,
-    "wall segments": walls,
-    "gate posts": posts,
-    cypresses: trees,
+    "plinth terrace": `${PLINTH_H}u high, ${PLINTH_PAD}u wider than the footprint`,
+    "steps": `${stepCount} treads, rise ${(stairs.src[1] * STAIR_S).toFixed(3)}u = plinth height`,
+    "forecourt": `${(2 * halfV).toFixed(1)} wide x ${(foreTo - foreFrom).toFixed(1)}u deep`,
+    "driveway": `${(2 * DRIVE_HALF).toFixed(1)} wide x ${(driveTo - driveFrom).toFixed(1)}u long`,
+    "parking bay": `${(2 * BAY_HU).toFixed(1)} x ${(2 * BAY_HV).toFixed(1)}u, in the side lawn`,
+    "hedge perimeter": +perimeter.toFixed(1),
+    "gate at u": +gateU.toFixed(2),
+    "gate from arterial": +arterialDistance(gDir).toFixed(2),
+    "gate opening": +(2 * GATE_HALF).toFixed(2),
+    "lawn behind the palace": +(BACK - halfU).toFixed(1),
+    "lawn each side": +(HW - halfV).toFixed(1),
+    "avenue palms": avenue,
+    "avenue spacing": +avenueSpacing.toFixed(2),
+    "lawn trees": lawnTrees,
+    "planting beds": beds,
+    cars,
     lamps,
-  }
+    "signboard moved outside": signboardMoved,
+  })
 }
+let _palaceProps: PlacedProp[] = []
 
+/**
+ * Final sweep: the roadside scatter runs after the estate exists and cannot
+ * test against it, so anything it dropped inside goes now.
+ */
+function sweepPalaceEstate(props: PlacedProp[]) {
+  const F = PALACE_FRAME
+  if (!F) return
+  const mine = new Set(_palaceProps)
+  const gone: PlacedProp[] = []
+  for (const q of props) {
+    if (mine.has(q)) continue
+    if (q.kind === "zone-signboard") continue
+    if (["bridge-deck", "bridge-rail", "bridge-pier", "metro-track", "metro-pillar", "metro-station"].includes(q.kind)) continue
+    if (inPalaceEstate(q.position.clone().normalize(), 0.5)) gone.push(q)
+  }
+  sweepScatter(props, gone)
+  _palace["swept after the roadside pass"] = gone.length
+}
 
 /**
  * Stairs, and only on ground that has somewhere to go.
@@ -4665,6 +5536,9 @@ const COLLIDER_SPECS: Partial<Record<PropKind, ColliderSpec>> = {
   // placeholder dims — every glb-building carries its real box on the prop
   // itself (PlacedProp.box), because each model's footprint differs
   "glb-building": { shape: "box", hx: 1, hz: 1, top: 1 },
+  // solid: the estate is enclosed, you walk round to the gate. Real extents
+  // ride on PlacedProp.box exactly like glb-building; scale is 1.
+  "hedge-run": { shape: "box", hx: 1, hz: 1, top: 1 },
   // the cow is a deliberate obstacle; the cat is scenery you can walk through
   cow: { shape: "box", hx: 0.42, hz: 0.85, top: 1.25 },
 }
@@ -4724,6 +5598,7 @@ function colliders(): Collider[] {
   if (_colliders) return _colliders
   const out: Collider[] = []
   for (const p of cachedProps()) {
+    if (p.noCollider) continue
     const spec = COLLIDER_SPECS[p.kind]
     if (!spec) continue
     const base = p.position.length()
@@ -5010,7 +5885,10 @@ const FRONTAGE_MAX = 3
  * zoning plan has claimed; the pad rendered on it is a marker, not a structure.
  */
 export const CIVIC_PLOTS: CivicPlot[] = [
-  { id: "hospital", district: "civic", anchorZone: "haveli", dir: [-0.478, -0.018, 0.878], footprint: 14, roadside: "prefer" },
+  // Moved off Bengaluru Palace in P59: its pad sat 9.8u from the palace and
+  // the pink deco block on it stood inside the estate. Binny Mills is the
+  // right district for a civic block and sited it cleanly before.
+  { id: "hospital", district: "civic", anchorZone: "mill", dir: [-0.2546, 0.1371, -0.9572], footprint: 14, roadside: "prefer" },
   { id: "college", district: "tech", anchorZone: "samadhi", dir: [0.824, -0.524, 0.218], footprint: 20 },
   { id: "itpark", district: "tech", anchorZone: "samadhi", dir: [0.9201, -0.3883, 0.051], footprint: 20 },
   { id: "apartments", district: "industrial", anchorZone: "mill", dir: [0.173, 0.512, -0.841], footprint: 20 },
